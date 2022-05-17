@@ -1005,18 +1005,44 @@ keypress(XEvent *e)
 			keys[i].func(&(keys[i].arg));
 }
 
+/* User function to close the selected client,
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls sendevent telling the window to terminate
+ * @calls XGrabServer https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
+ * @calls XSetErrorHandler https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
+ * @calls XKillClient https://tronche.com/gui/x/xlib/window-and-session-manager/XKillClient.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls XUngrabServer https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
+ *
+ * Internal execution path:
+ *    run -> keypress -> killclient -> sendevent
+ */
 void
 killclient(const Arg *arg)
 {
 	if (!selmon->sel)
 		return;
+	/* This sends an event with the WM_DELETE_WINDOW property to the selected client's window
+	 * giving it a chance to handle the termination itself. If that does not happen, however,
+	 * then we take hostile action against that window. */
 	if (!sendevent(selmon->sel, wmatom[WMDelete])) {
+		/* This disables processing of requests and close downs on all other connections than
+		 * the one this request arrived on. */
 		XGrabServer(dpy);
+		/* The dummy X error handler is set so that in case the X server blows any errors in
+		 * relation to what we are about to do next then those errors are simply ignored. */
 		XSetErrorHandler(xerrordummy);
+		/* This defines what will happen to the client's resources at connection close */
 		XSetCloseDownMode(dpy, DestroyAll);
+		/* This call forces a close-down of the client that created the resource */
 		XKillClient(dpy, selmon->sel->win);
+		/* This flushes the output buffer and then waits until all requests have been
+		 * received and processed by the X server. */
 		XSync(dpy, False);
+		/* Revert to the normal X error handler */
 		XSetErrorHandler(xerror);
+		/* This restarts processing of requests and close downs on other connections */
 		XUngrabServer(dpy);
 	}
 }
@@ -1083,26 +1109,76 @@ manage(Window w, XWindowAttributes *wa)
 	focus(NULL);
 }
 
+/* This handles MappingNotify events coming from the X server.
+ *
+ * @called_from run (the event handler)
+ * @calls grabkeys to inform the X server what key combinations the window manager is interested in
+ * @calls XRefreshKeyboardMapping https://tronche.com/gui/x/xlib/utilities/keyboard/XRefreshKeyboardMapping.html
+ * @see https://tronche.com/gui/x/xlib/events/window-state-change/mapping.html
+ *
+ * Internal execution path:
+ *    run -> mappingnotify -> grabkeys
+ */
 void
 mappingnotify(XEvent *e)
 {
 	XMappingEvent *ev = &e->xmapping;
 
+	/* Refreshes the stored modifier and keymap information. */
 	XRefreshKeyboardMapping(ev);
+	/* If the event was in relation to new keyboard mapping then we make a call to grabkeys.
+	 * This to inform the X server what keypress events we are interested in receiving. */
 	if (ev->request == MappingKeyboard)
 		grabkeys();
 }
 
+/* This handles MapRequest events coming from the X server.
+ *
+ * When an application creates a new window it starts out as being unmapped and the application
+ * should inform the X server when the window is ready to be displayed. It does so by sending a
+ * MapRequest event for the window to the X server, which in turn forwards that event to the window
+ * manager running the show. The window manager then decides whether it is going to manage that
+ * window or not, and if so how. If it decides to manage the window then it will decide if and when
+ * the window is mapped. If the window manager does not manage the window then the window will be
+ * mapped anyway (presumably by the X server).
+ *
+ * @called_from run (the event handler)
+ * @calls XGetWindowAttributes https://tronche.com/gui/x/xlib/window-information/XGetWindowAttributes.html
+ * @calls wintoclient to check whether the window manager is already managing this window
+ * @calls manage to make the window manager manage the window and create the client
+ *
+ * Internal execution path:
+ *    run -> maprequest -> manage
+ */
 void
 maprequest(XEvent *e)
 {
 	static XWindowAttributes wa;
 	XMapRequestEvent *ev = &e->xmaprequest;
 
+	/* This fetches the window attributes from the X server which contains the a lot of
+	 * information besides the width and height of the window. Refer to the documentation for
+	 * XGetWindowAttributes for more information. */
 	if (!XGetWindowAttributes(dpy, ev->window, &wa))
 		return;
+	/* From the documentation we have that:
+	 *   The override_redirect member is set to indicate whether this window overrides structure
+	 *   control facilities and can be True or False. Window manager clients should ignore the
+	 *   window if this member is True.
+	 *
+	 * What that boils down to is that if a window has that override-redirect flag set then it
+	 * means that the window manages itself and does not want the window manager to exert any
+	 * control over the window. A good example of this is dmenu which controls the size and
+	 * position on its own and does not want the window manager to intervene.
+	 */
 	if (wa.override_redirect)
 		return;
+	/* The wintoclient function returns the client that relates to the given window. If one is
+	 * found then we do not proceed. This is essentially a safeguard to prevent erroneous or
+	 * duplicate map request events from causing issues. If we do not find that the window is
+	 * already managed by the window manager then we proceed by handing the window over to the
+	 * manage function which handles the rest of the setup.
+	 */
 	if (!wintoclient(ev->window))
 		manage(ev->window, &wa);
 }
@@ -1252,9 +1328,20 @@ propertynotify(XEvent *e)
 	}
 }
 
+/* User function to quit / exit the window manager.
+ *
+ * @called_from keypress in relation to keybindings
+ *
+ * Internal execution path:
+ *    run -> keypress -> quit
+ */
 void
 quit(const Arg *arg)
 {
+	/* All this does is set the running global variable to 0, which makes the event handler
+	 * in the run function exit the while loop. This makes the run function return allowing
+	 * main to continue to perform cleanup and exiting the process.
+	 */
 	running = 0;
 }
 
