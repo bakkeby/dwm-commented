@@ -47,6 +47,8 @@
 /* macros */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
 #define CLEANMASK(mask)         (mask & ~(numlockmask|LockMask) & (ShiftMask|ControlMask|Mod1Mask|Mod2Mask|Mod3Mask|Mod4Mask|Mod5Mask))
+/* Calculates how much a monitor's window area intersects with a given size and position.
+ * See the writeup in the recttomon function for more information on this. */
 #define INTERSECT(x,y,w,h,m)    (MAX(0, MIN((x)+(w),(m)->wx+(m)->ww) - MAX((x),(m)->wx)) \
                                * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
 #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
@@ -513,6 +515,21 @@ cleanupmon(Monitor *mon)
 	free(mon);
 }
 
+/*
+ * You can test this by finding the window ID of a given window using xwininfo (e.g. 0x5000002) or
+ * using xdotool search (94371846) and using xdo or xdotool to activate that window.
+ *
+ *    $ xdo activate 0x5a00006
+ *    $ xdotool windowactivate 94371846
+ *
+ * Should you need to convert between decimal and hexadecimal window IDs we have:
+ *
+ *    $ echo $((0x5a00006))
+ *    94371846
+ *
+ *    $ printf '0x%x\n' 94371846
+ *    0x5a00006
+ */
 void
 clientmessage(XEvent *e)
 {
@@ -1024,8 +1041,27 @@ killclient(const Arg *arg)
 	if (!selmon->sel)
 		return;
 	/* This sends an event with the WM_DELETE_WINDOW property to the selected client's window
-	 * giving it a chance to handle the termination itself. If that does not happen, however,
-	 * then we take hostile action against that window. */
+	 * giving it a chance to handle the termination itself.
+	 *
+	 * The event is sent if the window has WM_DELETE_WINDOW listed as a protocol under the
+	 * WM_PROTOCOLS property of the window.
+	 *
+	 * $ xprop | grep WM_PROTOCOLS
+	 * WM_PROTOCOLS(ATOM): protocols  WM_DELETE_WINDOW, _NET_WM_PING
+	 *
+	 * If the window does not have that property then we enter this if statement and take
+	 * hostile actions against that window.
+	 *
+	 * Most windows will have this protocol set so we rarely end up inside this if statement.
+	 *
+	 * Note that sending this message to the window does not in any way guarantee that the
+	 * window will be closed, it is just a request telling the application that we want the
+	 * window to close and it is up to the application to handle that.
+	 *
+	 * An example of this is killing an editor which receives the delete window event and
+	 * then asks the user whether they want to save the file before closing. The user in this
+	 * case often have the option to cancel to stop the window from closing.
+	 */
 	if (!sendevent(selmon->sel, wmatom[WMDelete])) {
 		/* This disables processing of requests and close downs on all other connections than
 		 * the one this request arrived on. */
@@ -1111,6 +1147,8 @@ manage(Window w, XWindowAttributes *wa)
 
 /* This handles MappingNotify events coming from the X server.
  *
+ * This might happen if the user inserts a new keyboard or changes the keyboard layout.
+ *
  * @called_from run (the event handler)
  * @calls grabkeys to inform the X server what key combinations the window manager is interested in
  * @calls XRefreshKeyboardMapping https://tronche.com/gui/x/xlib/utilities/keyboard/XRefreshKeyboardMapping.html
@@ -1183,21 +1221,63 @@ maprequest(XEvent *e)
 		manage(ev->window, &wa);
 }
 
+/* This is what handles the monocle layout arrangement.
+ *
+ * @called_from arrangemon
+ * @calls snprintf to update the layout symbol of the monitor
+ * @calls nexttiled to get the next tiled client
+ * @calls resize to change the size and position of client windows
+ *
+ * Internal execution path:
+ *    ~ -> arrange -> arrangemon -> monocle
+ */
 void
 monocle(Monitor *m)
 {
-	unsigned int n = 0;
+	unsigned int n = 0; /* number of clients */
 	Client *c;
 
+	/* This for loop is just to get a count of all visible clients on the selected tag(s).
+	 * Note that this counts both tiled and floating clients. This number is then used to
+	 * update the layout symbol in the bar to say e.g. [3].
+	 */
 	for (c = m->clients; c; c = c->next)
 		if (ISVISIBLE(c))
 			n++;
+	/* The layout symbol of the monitor is only overwritten if there are clients visible
+	 * on the selected tag(s). Look up snprintf you are unsure what this does, but the gist
+	 * of it is that it replaces the %d format inside the string "[%d]" with the value of n
+	 * (e.g. 3) and writes the output to the monitor layout symbol (m->ltsymbol) and it writes
+	 * at most 16 bytes (sizeof m->ltsymbol) to that variable.
+	 */
 	if (n > 0) /* override layout symbol */
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
+	/* This just loops through all tiled clients and resizes them to take up the entire window
+	 * area. Note that this does not have anything to do with which window is shown on top, that
+	 * is determined by the the window that has focus which will be above other tiled windows in
+	 * the stack.
+	 */
 	for (c = nexttiled(m->clients); c; c = nexttiled(c->next))
 		resize(c, m->wx, m->wy, m->ww - 2 * c->bw, m->wh - 2 * c->bw, 0);
 }
 
+
+/* This handles MotionNotify events coming from the X server.
+ *
+ * These events happen whenever the mouse cursor moves over the root window or other windows that
+ * subscribe to motion notifications by setting the PointerMotionMask event mask. An example would
+ * be to set that event mask for the bar should you want to have things happen when you hover the
+ * mouse cursor over the bar. That would generate events which would then be handled in this
+ * function.
+ *
+ * @called_from run (the event handler)
+ * @calls recttomon to check which monitor the cursor is on
+ * @calls unfocus in the event of the selected monitor changing
+ * @calls focus in the event of the selected monitor changing
+ *
+ * Internal execution path:
+ *    run -> motionnotify
+ */
 void
 motionnotify(XEvent *e)
 {
@@ -1205,13 +1285,26 @@ motionnotify(XEvent *e)
 	Monitor *m;
 	XMotionEvent *ev = &e->xmotion;
 
+	/* Ignore the motion event if it was not for the root window */
 	if (ev->window != root)
 		return;
+	/* This makes a call to recttomon (rectangle to monitor) with the coordinates of the mouse
+	 * pointer to work out which monitor the mouse cursor is on. We only enter the if statement
+	 * if the monitor has changed. Note that the mon variable is static, which means that it is
+	 * only declared and initialised to NULL once and it will retain the set value for all
+	 * subsequent calls to this function.
+	 */
 	if ((m = recttomon(ev->x_root, ev->y_root, 1, 1)) != mon && mon) {
+		/* In the event that the monitor has changed then we unfocus the selected client
+		 * on the current monitor before switching over. */
 		unfocus(selmon->sel, 1);
+		/* We set the selected monitor to be the one the mouse cursor is currently on. */
 		selmon = m;
+		/* Passing NULL to the focus function will result in the client at the top of the
+		 * stack to receive focus, i.e. the window that last had focus on this monitor. */
 		focus(NULL);
 	}
+	/* Set the static mon variable to be the monitor the mouse cursor is on. */
 	mon = m;
 }
 
@@ -1275,20 +1368,49 @@ movemouse(const Arg *arg)
 	}
 }
 
+/* This returns the next tiled client on the currently selected tag(s).
+ *
+ * Given an input client c the function returns the next visible tiled client in the list, or NULL
+ * if there are no more subsequent tiled clients.
+ *
+ * @called_from tile for tiling purposes
+ * @called_from monocle for tiling purposes
+ * @called_from zoom to check if the selected client is the master client
+ *
+ * Internal execution path:
+ *    ~ -> arrangemon -> tile / monocle -> nexttiled
+ *    run -> keypress -> zoom -> nexttiled
+ */
 Client *
 nexttiled(Client *c)
 {
+	/* Loop through all clients following the given client c and ignore clients on other tags
+	 * and floating clients. */
 	for (; c && (c->isfloating || !ISVISIBLE(c)); c = c->next);
+	/* Return the client found, if any, will be NULL if the linked list is exhausted. */
 	return c;
 }
 
+/* This function moves a client to the top of the tile stack, making it the new master window.
+ *
+ * @called_from zoom to move the selected client to become the new master
+ * @calls detach to remove the client from where it currently is in the tile stack
+ * @calls attach to add the client at the top of the tile stack
+ * @calls focus to give the client becoming the new master input focus
+ * @calls arrange to resize and reposition all tiled windows
+ *
+ * Internal execution path:
+ *    run -> keypress -> zoom -> pop
+ */
 void
 pop(Client *c)
 {
+	/* The detach and attach calls take the given client and moves it out the tile stack (list
+	 * of clients) and adds it again at the start of the list making it the new master window. */
 	detach(c);
 	attach(c);
-	focus(c);
-	arrange(c->mon);
+	focus(c); /* Make sure the given window has input focus */
+	arrange(c->mon); /* Rearrange all tiled windows as the order has changed */
 }
 
 void
@@ -1345,13 +1467,71 @@ quit(const Arg *arg)
 	running = 0;
 }
 
+/* The "rectangle to monitor" function takes x and y coordinates as well as height and width and
+ * it works out which monitor this rectangle is on (or overlaps it the most if the rectangle spans
+ * more than one window).
+ *
+ * This is also used when working out which monitor the mouse pointer resides on, in which case
+ * the x and y coordinates are those of the mouse pointer and the heigh and width are simply 1 to
+ * refer to that particular point.
+ *
+ * @called_from motionnotify to check which monitor the mouse cursor is on
+ * @called_from movemouse to check if a moved client window has moved over to another monitor
+ * @called_from resizemouse to check if a moved client window has moved over to another monitor
+ * @called_from wintomon to check which monitor the mouse cursor is on
+ *
+ * Internal execution path:
+ *    run -> motionnotify -> recttomon
+ *    run -> keypress -> movemouse / resizemouse -> recttomon
+ *    run -> keypress -> resizemouse -> recttomon
+ *    run -> buttonpress / enternotify / expose -> wintomon -> recttomon
+ *    ~ -> updategeom -> wintomon -> rectomon
+ */
 Monitor *
 recttomon(int x, int y, int w, int h)
 {
 	Monitor *m, *r = selmon;
 	int a, area = 0;
 
+	/* INTERSECT is a macro that calculates how much of the area of the given rectangle is
+	 * covered by the given monitor.
+	 *
+	 * The macro is only used in this function so it makes sense to list it here for reference.
+	 *
+	 * #define INTERSECT(x,y,w,h,m)  (MAX(0, MIN((x)+(w),(m)->wx+(m)->ww) - MAX((x),(m)->wx)) \
+	 *                              * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
+	 *
+	 * The MAX(0, ...) are there to prevent negative values from giving false positives. For
+	 * readability reasons we can remove these and also get rid of some parentheses.
+	 *
+	 *      (MIN(x + w, wx + ww) - MAX(x, wx))
+	 *    * (MIN(y + h, wy + wh) - MAX(y, wy))
+	 *
+	 *  x,  y,  w,  h - think of these as a window's coordinates + width and height
+	 * wx, wy, ww, wh - think of these as the monitor's window area position and size
+	 *
+	 * The first line handles the horizontal dimension while the second handles the vertical
+	 * dimension.
+	 *    MIN(x + w, wx + ww) - this caps the right hand border covered by the monitor
+	 *    MAX(x, wx)) - this caps the left hand border covered by the monitor
+	 *
+	 * Subtracting the left hand border from the right hand border gives the width that the
+	 * monitor covers of the window.
+	 *
+	 *    MIN(y + h, wy + wh) - this caps the top border covered by the monitor
+	 *    MAX(y, wy) - this caps the bottom border covered by the monitor
+	 *
+	 * Subtracting the bottom border from the top border gives the height that the monitor
+	 * covers of the window.
+	 *
+	 * Finally multiplying the covered height and covered width gives the area of the
+	 * intersection between the monitor window area and the given window.
+	 */
 	for (m = mons; m; m = m->next)
+		/* Here we loop through each monitor and works out which of the monitors has the
+		 * largest intersection of the given rectangle. The leading monitor being stored
+		 * in the variable r and the current maximum is stored in the variable named area.
+		 */
 		if ((a = INTERSECT(x, y, w, h, m)) > area) {
 			area = a;
 			r = m;
@@ -1359,6 +1539,31 @@ recttomon(int x, int y, int w, int h)
 	return r;
 }
 
+/* The resize function resizes a client window to the dimensions given, but only if the new
+ * position and dimensions would lead to a change in size or position after size hints have
+ * been taken into account.
+ *
+ * The interact flag indicates whether the resize is due to the user manually interacting with the
+ * window or if it is due to automated processes like tiling arrangements. The difference has to
+ * do with the boundaries that are imposed; if the user is manually resizing or moving the window
+ * then they can freely move that window half-way between two monitors, but if the resize is not
+ * interactive then the resize placement and size is restricted to the monitor window area. Refer
+ * to the applysizehints function for more details.
+ *
+ * @called_from monocle for tiling purposes
+ * @called_from movemouse to change position of the client window
+ * @called_from resizemouse to change the size of the client window
+ * @called_from showhide to move the window back into view when shown
+ * @called_from tile for tiling purposes
+ * @called_from togglefloating to resize the window taking size hints into account
+ * @calls applysizehints to check if the window needs resizing taking size hints into account
+ * @calls resizeclient to resize the client
+ *
+ * Internal execution path:
+ *    ~ -> arrange -> showhide -> resize
+ *    ~ -> arrangemon -> monocle / tile -> resize
+ *    run -> keypress -> movemouse / resizemouse / togglefloating -> resize
+ */
 void
 resize(Client *c, int x, int y, int w, int h, int interact)
 {
@@ -1366,18 +1571,49 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 		resizeclient(c, x, y, w, h);
 }
 
+/* This handles the actual resize of the a client window.
+ *
+ * @called_from resize to change the size of the client window after size hints have been checked
+ * @called_from setfullscreen when moving a window into and out of fullscreen
+ * @called_from configurenotify to restore fullscreen after a monitor change
+ * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls configure to send an event to the window indicating that the size has changed
+ *
+ * Internal execution path:
+ *    ~ -> resize -> resizeclient
+ *    ~ -> clientmessage / updatewindowtype -> setfullscreen -> resizeclient
+ *    run -> configurenotify -> resizeclient
+ */
 void
 resizeclient(Client *c, int x, int y, int w, int h)
 {
 	XWindowChanges wc;
 
+	/* There are three things happening here:
+	 *    - the existing x, y, w and h are stored in oldx, oldy, oldw and oldh respectively and
+	 *    - the new x, y, w and h are stored in the client for future reference and
+	 *    - the new x, y, w and h are stored in the XWindowChanges structure
+	 *
+	 * The oldx, oldy, etc. values are only ever used in the setfullscreen function, so setting
+	 * those here is only in relation to the resizeclient call being made in that function.
+	 */
 	c->oldx = c->x; c->x = wc.x = x;
 	c->oldy = c->y; c->y = wc.y = y;
 	c->oldw = c->w; c->w = wc.width = w;
 	c->oldh = c->h; c->h = wc.height = h;
 	wc.border_width = c->bw;
+	/* This calls reconfigures the window's size, position and border according to the
+	 * XWindowChanges structure that have been populated with data above. */
 	XConfigureWindow(dpy, c->win, CWX|CWY|CWWidth|CWHeight|CWBorderWidth, &wc);
+	/* In principle the above call should be enough to change the size and position of the
+	 * window, but not all applications behave the same way and some need to be told that their
+	 * window has changed - so we send a XConfigureEvent to notify the window owner that the
+	 * dimensions or position has changed. This is handled in the configure function.
+	 */
 	configure(c);
+	/* This flushes the output buffer and then waits until all requests have been received and
+	 * processed by the X server. */
 	XSync(dpy, False);
 }
 
@@ -1526,40 +1762,111 @@ setclientstate(Client *c, long state)
 		PropModeReplace, (unsigned char *)data, 2);
 }
 
+/* This function sends a client message event to a client window provided that the client window
+ * advertises support for the given protocol in the WM_PROTOCOLS property.
+ *
+ * If the client window does not advertise support for the given protocol then the function
+ * returns 0.
+ *
+ * @called_from killclient to tell the window to close (WM_DELETE_WINDOW)
+ * @called_from setfocus to tell the window to take focus (WM_TAKE_FOCUS)
+ * @calls XGetWMProtocols https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetWMProtocols.html
+ * @calls XSendEvent https://tronche.com/gui/x/xlib/event-handling/XSendEvent.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @see https://tronche.com/gui/x/xlib/events/structures.html
+ * @see https://tronche.com/gui/x/xlib/events/client-communication/client-message.html#XClientMessageEvent
+ * @returns 1 if the client window supports the given protocol, 0 otherwise
+ *
+ * Internal execution path:
+ *    ~ -> focus -> setfocus -> sendevent
+ *    run -> keypress -> killclient -> sendevent
+ *    run -> focusin -> setfocus -> sendevent
+ */
 int
 sendevent(Client *c, Atom proto)
 {
-	int n;
+	int n; /* to store the number of protocols */
 	Atom *protocols;
-	int exists = 0;
-	XEvent ev;
+	int exists = 0; /* whether the desired protocol exists */
+	XEvent ev; /* the event structure we are about to send */
 
+	/* The XGetWMProtocols call retrieves the protocols that the client window advertises
+	 * via the WM_PROTOCOLS property. In the following example we can see that a window
+	 * indicates support for the WM_DELETE_WINDOW and the WM_TAKE_FOCUS protocols, which means
+	 * that it accepts receiving client messages using these message types.
+	 *
+	 * $ xprop | grep WM_PROTOCOLS
+	 * WM_PROTOCOLS(ATOM): protocols  WM_DELETE_WINDOW, WM_TAKE_FOCUS, _NET_WM_PING
+	 *
+	 * Not all windows supports all message types, so the below checks whether the given
+	 * protocol is supported by the window.
+	 */
 	if (XGetWMProtocols(dpy, c->win, &protocols, &n)) {
 		while (!exists && n--)
 			exists = protocols[n] == proto;
 		XFree(protocols);
 	}
+	/* We only send the event if the client window supports the message type. */
 	if (exists) {
+		/* If you want to know more about the values set here then refer to the page on
+		 * ClientMessage Events (XClientMessageEvent) listed in the function comment above. */
 		ev.type = ClientMessage;
 		ev.xclient.window = c->win;
 		ev.xclient.message_type = wmatom[WMProtocols];
 		ev.xclient.format = 32;
 		ev.xclient.data.l[0] = proto;
 		ev.xclient.data.l[1] = CurrentTime;
+		/* This sends the event to the client window. */
 		XSendEvent(dpy, c->win, False, NoEventMask, &ev);
 	}
 	return exists;
 }
 
+/* This function tells the window to take focus.
+ *
+ * @called_by focus to tell the client to take focus
+ * @called_by focusin to tell the client to take focus
+ * @calls XSetInputFocus https://tronche.com/gui/x/xlib/input/XSetInputFocus.html
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ * @calls sendevent to tell the window to take focus
+ * @see updatewmhints for how c->neverfocus is set
+ *
+ * Internal execution path:
+ *    ~ -> focus -> setfocus -> sendevent
+ *    run -> focusin -> setfocus -> sendevent
+ */
 void
 setfocus(Client *c)
 {
+	/* Some windows may provide window manager hints indicating that that it does not handle
+	 * input focus. Refer to the updatewmhints function for details on how the c->neverfocus
+	 * variable is set in relation to the WM hint.
+	 *
+	 * One example of this is xclock which is a just a window showing a clock. If you are in
+	 * a terminal for example and focus on the xclock window then the xclock border will change
+	 * colour as that client is selected, but the input focus will remain in the previous
+	 * window (as demonstrated by typing something).
+	 */
 	if (!c->neverfocus) {
+		/* This is what gives input focus to the client, allowing you to type and otherwise
+		 * interact with it. */
 		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+		/* This sets the _NET_ACTIVE_WINDOW property for the root window to refer to the
+		 * window that is active (has input focus).
+		 *
+		 * This can be seen by running this command and clicking on the background
+		 * (wallpaper) which is the root window.
+		 *
+		 * $ xprop | grep _NET_ACTIVE_WINDOW
+		 * _NET_ACTIVE_WINDOW(WINDOW): window id # 0x5000002
+		 */
 		XChangeProperty(dpy, root, netatom[NetActiveWindow],
 			XA_WINDOW, 32, PropModeReplace,
 			(unsigned char *) &(c->win), 1);
 	}
+	/* This tells the window to take focus by sending a client message event with the
+	 * WM_TAKE_FOCUS message type. The event is only sent if the window supports that protocol.
+	 */
 	sendevent(c, wmatom[WMTakeFocus]);
 }
 
@@ -1605,18 +1912,61 @@ setlayout(const Arg *arg)
 		drawbar(selmon);
 }
 
-/* arg > 1.0 will set mfact absolutely */
+/* User function to set or adjust the master / stack factor (or ratio if you wish) for the
+ * selected monitor.
+ *
+ * The mfact is a floating value with:
+ *    - a minimum value of 0.05 (5% of the window area) and
+ *    - a maximum value of 0.95 (95% of the window area)
+ *
+ * As per the default configuration this factor is adjusted with increments or decrements of 0.05
+ * using the MOD+l and MOD+h keybindings.
+ *
+ * The default mfact value is 0.55 giving the master area slightly more space than the stack area.
+ *
+ * Optionally the user can pass a value greater than 1.0 to set an absolute value, in which case
+ * 1.0 will be subtracted from the given value. For example the following keybinding would
+ * explicitly set the mfact value to 0.5:
+ *
+ *     { MODKEY,                       XK_u,      setmfact,       {.f = 1.50} },
+ *
+ * When setting the mfact value absolutely the value given (less the subtracted 1.0) must fall
+ * within the minimum and maximum boundaries for the master / stack factor - otherwise the value
+ * will simply be ignored.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls arrange to reposition and resize clients after the mfact has been changed
+ *
+ * Internal execution path:
+ *    run -> keypress -> setmfact
+ */
 void
 setmfact(const Arg *arg)
 {
-	float f;
+	float f; /* The next factor value */
 
+	/* If the selected layout for the selected monitor is floating layout (as indicated by
+	 * having a NULL arrange function as defined in the layouts array), or if the function is
+	 * called without an argument, then we do nothing. */
 	if (!arg || !selmon->lt[selmon->sellt]->arrange)
 		return;
+	/* If the given float argument is less than 1.0 then make a relative adjustment of the mfact
+	 * value, otherwise set the mfact value absolutely. */
 	f = arg->f < 1.0 ? arg->f + selmon->mfact : arg->f - 1.0;
+	/* Check that the next factor value is within the bounds of the minimum of 0.5 and the
+	 * maximum of 0.95. If it is not then we bail out here */
 	if (f < 0.05 || f > 0.95)
 		return;
+	/* Set the master / stack factor to the new value */
 	selmon->mfact = f;
+	/* This makes a call to arrange so that the tiled windows are resized and repositioned
+	 * following the change to the master / stack factor. In principle this could have been a
+	 * call to arrangemon(selmon) as all that is needed is for the clients to be tiled again.
+	 *
+	 * The call to arrange will result in subsequent calls to showhide arrangemon, restack and
+	 * drawbar to redraw the bar. While not strictly necessary in this case the performance
+	 * overhead is negligible and arrange is a catch all that can prevent obscure issues.
+	 */
 	arrange(selmon);
 }
 
@@ -1690,16 +2040,73 @@ setup(void)
 	focus(NULL);
 }
 
-
+/* This sets or removes the urgency hint for the given client.
+ *
+ * If the given urg value is 1 then:
+ *    - c->isurgent will be set to 1 and
+ *    - the XUrgencyHint will be added to the client's window manager hints
+ *
+ * If the given urg value is 0 then:
+ *    - c->isurgent will be set to 0 and
+ *    - the XUrgencyHint will be removed from the client's window manager hints
+ *
+ * If a client on has the urgency bit set then this can cause the colours for the tag to be
+ * inverted (background and foreground colours swap) in the bar. See the drawbar function for how
+ * the c->isurgent value is used to achieve this.
+ *
+ * @called_from focus to remove the urgency bit when the client receives focus
+ * @called_from clientmessage if a _NET_ACTIVE_WINDOW message type is received and the client is
+ *                            not the selected client
+ * @calls XGetWMHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetWMHints.html
+ * @calls XSetWMHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XSetWMHints.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @see updatewmhints which also sets c->isurgent based on the urgency hint
+ * @see drawbar for how the c->isurgent is used to indicate urgent tags in the bar
+ * @see clientmessage for an example showing how you can test the setting of the urgency bit
+ *
+ * Internal execution path:
+ *    ~ -> focus -> seturgent
+ *    run -> clientmessage -> seturgent
+ */
 void
 seturgent(Client *c, int urg)
 {
 	XWMHints *wmh;
 
+	/* This sets the internal urgency flag for the client */
 	c->isurgent = urg;
+	/* This retrieves window manager hints for the client window. If the client does not have
+	 * any then we bail here. */
 	if (!(wmh = XGetWMHints(dpy, c->win)))
 		return;
+	/* This updates the window manager hints flags by either adding or removing the XUrgencyHint
+	 * bit. This is a straightforward binary operation, but may warrant some explaining for
+	 * those less familiar with binary operators.
+	 *
+	 *    (wmh->flags | XUrgencyHint)  - The binary or (|) combines the existing flags with
+	 *                                   the flag of XUrgencyHint, as in keep the existing
+	 *                                   flags and add XUrgencyHint.
+	 *    (wmh->flags & ~XUrgencyHint) - The binary and (&) only includes the bits that are
+	 *                                   present on both sides of the operator and the bitwise
+	 *                                   not (~) operator inverts the value of XUrgencyHint.
+	 *                                   What the statement says is to keep all flags except
+	 *                                   XUrgencyHint, as in remove that flag from the
+	 *                                   existing flags.
+	 *
+	 * The ternary operator is just a shorthand for if, else. This could also have been written
+	 * like this:
+	 *
+	 *    if (urg)
+	 *        wmh->flags |= XUrgencyHint;
+	 *    else
+	 *        wmh->flags &= ~XUrgencyHint;
+	 *
+	 * What is more readable is subjective, but given the project's goal of being a window
+	 * manager of less than 2000 source lines of code (SLOC) it is clear that the ternary
+	 * operator is preferred.
+	 */
 	wmh->flags = urg ? (wmh->flags | XUrgencyHint) : (wmh->flags & ~XUrgencyHint);
+	/* This updates the window manager hints for the client window following the above change */
 	XSetWMHints(dpy, c->win, wmh);
 	XFree(wmh);
 }
@@ -1722,11 +2129,25 @@ showhide(Client *c)
 	}
 }
 
+/* This sets up a signal handler for child processes. The aim of this, as far as I understand,
+ * is to make sure that any zombie processes are cleaned up immediately.
+ *
+ * @called_from setup to clean up any zombie proceses from previous runs
+ * @calls signal https://linux.die.net/man/2/signal
+ * @calls die to print errors and exit dwm (see util.c)
+ * @calls waitpid https://linux.die.net/man/3/waitpid
+ * @see https://linux.die.net/man/2/sigaction
+
+ * Internal execution path:
+ *    main -> setup -> sigchld
+ */
 void
 sigchld(int unused)
 {
+	/* If we can't set up the signal handler then end the program with an error */
 	if (signal(SIGCHLD, sigchld) == SIG_ERR)
 		die("can't install SIGCHLD handler:");
+	/* This will wait for child processes to stop or terminate */
 	while (0 < waitpid(-1, NULL, WNOHANG));
 }
 
@@ -2192,6 +2613,10 @@ xerror(Display *dpy, XErrorEvent *ee)
 	return xerrorxlib(dpy, ee); /* may call exit */
 }
 
+/* A dummy X error handler that just ignores any X errors.
+ *
+ * @see killclient that sets this function as the error handler when forcibly
+ */
 int
 xerrordummy(Display *dpy, XErrorEvent *ee)
 {
@@ -2199,7 +2624,10 @@ xerrordummy(Display *dpy, XErrorEvent *ee)
 }
 
 /* Startup Error handler to check if another window manager
- * is already running. */
+ * is already running.
+ *
+ * @see checkotherwm which sets this function as the X error handler
+ */
 int
 xerrorstart(Display *dpy, XErrorEvent *ee)
 {
@@ -2207,17 +2635,35 @@ xerrorstart(Display *dpy, XErrorEvent *ee)
 	return -1;
 }
 
+/* User function to move the selected client to become the new master client. If the selected
+ * client is the master client then the master and the next tiled window will swap places.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls nexttiled to check if the selected client is the master client
+ * @calls pop to move the client to the top of the tile stack, making it the new master window
+ *
+ * Internal execution path:
+ *    run -> keypress -> zoom
+ */
 void
 zoom(const Arg *arg)
 {
 	Client *c = selmon->sel;
 
+	/* If the selected layout for the selected monitor is floating layout (as indicated by
+	 * having a NULL arrange function as defined in the layouts array), or if the selected
+	 * client is floating, then we do nothing. */
 	if (!selmon->lt[selmon->sellt]->arrange
 	|| (selmon->sel && selmon->sel->isfloating))
 		return;
+	/* If the selected client is already the master client (or both are NULL) then */
 	if (c == nexttiled(selmon->clients))
+		/* try to find the next tiled client, but bail if there is no other tiled clients */
 		if (!c || !(c = nexttiled(c->next)))
+
 			return;
+	/* Call pop to move the client to the top of the tile stack so that it becomes the new
+	 * master client. */
 	pop(c);
 }
 
