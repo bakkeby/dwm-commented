@@ -46,6 +46,9 @@
 
 /* macros */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
+/* The CLEANMASK macro removes the Num Lock mask and Lock masks from a given bit mask.
+ * Refer to the numlockmask variable comment for more details on the Num Lock mask.
+ * The CLEANMASK macro is used in the grabkeys and grabbuttons functions. */
 #define CLEANMASK(mask)         (mask & ~(numlockmask|LockMask) & (ShiftMask|ControlMask|Mod1Mask|Mod2Mask|Mod3Mask|Mod4Mask|Mod5Mask))
 /* Calculates how much a monitor's window area intersects with a given size and position.
  * See the writeup in the recttomon function for more information on this. */
@@ -245,6 +248,16 @@ static int sw, sh;           /* X display screen geometry width, height */
 static int bh, blw = 0;      /* bar geometry */
 static int lrpad;            /* sum of left and right padding for text */
 static int (*xerrorxlib)(Display *, XErrorEvent *);
+/* The static global numlockmask variable that holds the modifier
+ * that is related to the Num Lock key.
+ *
+ * @set_in updatenumlockmask
+ * @used_by grabkeys
+ * @used_by grabbuttons
+ * @used_by buttonpress (via the CLEANMASK macro)
+ * @used_by keypress (via the CLEANMASK macro)
+ * @see CLEANMASK macro
+ */
 static unsigned int numlockmask = 0;
 static void (*handler[LASTEvent]) (XEvent *) = {
 	[ButtonPress] = buttonpress,
@@ -596,6 +609,14 @@ configurenotify(XEvent *e)
 	}
 }
 
+/*
+ * @called_from movemouse as it forwards events to configurerequest
+ * @called_from resizemouse as it forwards events to configurerequest
+ *
+ * Internal call stack:
+ *    run -> configurerequest
+ *    run -> keypress -> movemouse / resizemouse -> configurerequest
+ */
 void
 configurerequest(XEvent *e)
 {
@@ -665,13 +686,29 @@ createmon(void)
 	return m;
 }
 
+/* This handles DestroyNotify events coming from the X server.
+ *
+ * This happens when a client application destroys a window.
+ *
+ * @called_from run (the event handler)
+ * @calls wintoclient to find the client the given event is related to
+ * @calls unmanage to stop managing the window and remove the client
+ * @see https://tronche.com/gui/x/xlib/events/window-state-change/destroy.html
+ * @see https://linux.die.net/man/3/xdestroywindowevent
+ *
+ * Internal call stack:
+ *    run -> destroynotify
+ */
 void
 destroynotify(XEvent *e)
 {
 	Client *c;
 	XDestroyWindowEvent *ev = &e->xdestroywindow;
 
+	/* Find the client the event is for. If the event is for a client window that is not managed
+	 * by the window manager then we do nothing. */
 	if ((c = wintoclient(ev->window)))
+		/* Stop managing the window and remove the client. */
 		unmanage(c, 1);
 }
 
@@ -766,12 +803,23 @@ drawbar(Monitor *m)
 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
 }
 
+/* This updates the bar on all monitors.
+ *
+ * @called_from focus to update the bars following focus changes
+ * @called_from propertynotify to update the bars following update of window manager hints
+ *
+ * Internal call stack:
+ *    ~ -> focus -> drawbars
+ *    run -> propertynotify -> drawbars
+ */
 void
 drawbars(void)
 {
 	Monitor *m;
 
+	/* Loop through each monitor */
 	for (m = mons; m; m = m->next)
+		/* and update the bar for that monitor */
 		drawbar(m);
 }
 
@@ -794,12 +842,75 @@ enternotify(XEvent *e)
 	focus(c);
 }
 
+/* This handles Expose events coming from the X server.
+ *
+ * The X server can report Expose events to clients wanting information about when the contents of
+ * window regions have been lost. A window region can get lost if another window overlaps it, in
+ * which case the overlapped part of the window is damaged.
+ *
+ * When the other window overlapping it is moved then that damaged region of the window is exposed
+ * (shown) to the user.
+ *
+ * In the context of dwm the window manager creates one window per monitor and this window is used
+ * to show the bar. As such dwm is interested in knowing whether the bar window is damaged.
+ *
+ * If you look at the updatebars function then we indicate interest in being notified of expose
+ * events by passing the ExposureMask event mask when the bar window is created.
+ *
+ *     XSetWindowAttributes wa = {
+ *         .override_redirect = True,
+ *         .background_pixmap = ParentRelative,
+ *         .event_mask = ButtonPressMask|ExposureMask
+ *     };
+ *
+ * Now this function is also called by the movemouse and resizemouse functions. This has to do with
+ * that dwm is a single process program and when you click and drag a window around with the mouse
+ * then the process is stuck in a while loop inside run -> keypress -> movemouse until you release
+ * the button. In other words the event loop is held up while a move or resize takes place and as
+ * such status updates stop happening as an example.
+ *
+ * While the mouse is being moved or resized the respective function checks the event queue for
+ * certain events and Expose events are one of the ones checked:
+ *
+ *     XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
+ *
+ * This means that if an Expose event comes in while a window is being moved around then that will
+ * be caught by the movemouse function which will forward the event to this function. This is to
+ * ensure that the bar is redrawn if you move a window over the bar and away again.
+ *
+ * For a better understanding of this try removing ExposureMask| from the XMaskEvent in the
+ * movemouse function and move a window over the bar. When the window is moved away then that will
+ * leave a blank area where the bar was because the bar is no longer redrawn when these expose
+ * events come through.
+ *
+ * It is worth nothing that if you apply the alpha patch then graphics are handled differently due
+ * to transparency which means that the bar window will not be damaged by another window
+ * overlapping it, thus there will be no Expose events coming through.
+ *
+ * @called_from run (the event handler)
+ * @called_from movemouse as it forwards events to expose
+ * @called_from resizemouse as it forwards events to expose
+ * @calls wintomon to find the monitor the exposed window resides on
+ * @calls drawbar to redraw the bar to repair any damage
+ * @see updatebars where the bar window is created
+ * @see movemouse for how it forwards events to certain event handlers
+ * @see resizemouse for how it forwards events to certain event handlers
+ * @see https://tronche.com/gui/x/xlib/events/exposure/expose.html
+ *
+ * Internal call stack:
+ *    run -> expose
+ *    run -> keypress -> movemouse / resizemouse -> expose
+ */
 void
 expose(XEvent *e)
 {
 	Monitor *m;
 	XExposeEvent *ev = &e->xexpose;
-
+	/* We only enter the if statement to redraw the bar if the event count is 0. The event count
+	 * indicates how many more of these events are waiting in the queue, and by checking for 0
+	 * we make sure to only update the bar when there are no more events to process.
+	 * The wintomon call works out which monitor the exposed bar window is on.
+	 */
 	if (ev->count == 0 && (m = wintomon(ev->window)))
 		drawbar(m);
 }
@@ -948,20 +1059,81 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	return 1;
 }
 
+/* This tells the X server what mouse button press scenarios we are interested in receiving
+ * notifications for.
+ *
+ * @called_by focus because we subscribe to different button notifications for focused windows
+ * @called_by unfocus because we subscribe to different button notifications for unfocused windows
+ * @called_by manage to grab buttons in case the client starts on another tag due to client rules
+ * @calls XUngrabButton https://tronche.com/gui/x/xlib/input/XUngrabButton.html
+ * @calls XGrabButton https://tronche.com/gui/x/xlib/input/XGrabButton.html
+ * @calls updatenumlockmask to make sure the Num Lock modifier is correct
+ *
+ * Internal call stack:
+ *    ~ -> focus -> grabbuttons
+ *    ~ -> unfous -> grabbuttons
+ *    run -> maprequest -> manage -> grabbuttons
+ */
 void
 grabbuttons(Client *c, int focused)
 {
+	/* First make sure that we have the right modifier for the Num Lock key */
 	updatenumlockmask();
+	/* Technically there isn't any practical reason why the below is placed within a separate
+	 * block, but it is most likely done so because the function otherwise breaks the general
+	 * pattern of declaring all variables at the start of the function, but here we need to make
+	 * the call to updatenumlockmask() first because we use the numlockmask variable when
+	 * declaring the modifiers array. The alternative could be to place all of the below in a
+	 * separate function but that would be less clean than simply adding it all in a block. */
 	{
 		unsigned int i, j;
+		/* The list of modifiers we are interested in. No additional modifier, the Lock mask,
+		 * the Num Lock mask, and Lock and Num Lock mask together. */
 		unsigned int modifiers[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
+		/* Call to release any buttons we may have grabbed before. */
 		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+
+		/* If the client is not focused then we are interested in any button press activity
+		 * related to the client window. Only the focus function calls grabbuttons passing
+		 * focused as 1.
+		 */
 		if (!focused)
 			XGrabButton(dpy, AnyButton, AnyModifier, c->win, False,
 				BUTTONMASK, GrabModeSync, GrabModeSync, None, None);
+
+		/* Loop through all the button bindings as defined in the configuration file and
+		 * look for all bindings related to clicking on a client window (ClkClientWin).
+		 *
+		 * As a practical example let's look at this button binding:
+		 *
+		 *    { ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
+		 *
+		 * The binding is for clicking MOD+left mouse button (Button1) on a client window
+		 * to move it around.
+		 *
+		 * To make this happen we need to let the X server know that we want to receive a
+		 * ButtonPress event if the user holds down the modifier key and clicks using the
+		 * left mouse button on the given window. More so we want this to work regardless
+		 * of whether Num Lock or general Lock is enabled.
+		 *
+		 * The inner for loop runs through the modifiers that we listed in the modifiers
+		 * array earlier and combines each modifier with the modifier defined in the button
+		 * bindings array.
+		 *
+		 * This will lead to the window manager receiving ButtonPress notifications for this
+		 * window in the following scenarios:
+		 *    - user holds down MODKEY and clicks Button1
+		 *    - user holds down MODKEY and clicks Button1 while Num Lock is on
+		 *    - user holds down MODKEY and clicks Button1 while Lock is on
+		 *    - user holds down MODKEY and clicks Button1 while both Num Lock and Lock is on
+		 */
 		for (i = 0; i < LENGTH(buttons); i++)
 			if (buttons[i].click == ClkClientWin)
+				/* Loop through all the modifiers we are interested in */
 				for (j = 0; j < LENGTH(modifiers); j++)
+					/* Grab the button to tell the X server that we are interested
+					 * in receiving ButtonPress notifications when the user clicks
+					 * on the button in combination with the given modifier. */
 					XGrabButton(dpy, buttons[i].button,
 						buttons[i].mask | modifiers[j],
 						c->win, False, BUTTONMASK,
@@ -969,19 +1141,84 @@ grabbuttons(Client *c, int focused)
 	}
 }
 
+/* TODO
+ *
+ * @called_from mappingnotify in the event of keyboard or keyboard layout change
+ * @called_from setup to grab the keys initially
+ * @calls XUngrabKey https://tronche.com/gui/x/xlib/input/XUngrabKey.html
+ * @calls XGrabKey https://tronche.com/gui/x/xlib/input/XGrabKey.html
+ * @calls XKeysymToKeycode https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToKeycode.html
+ * @calls updatenumlockmask
+ * @see https://tronche.com/gui/x/xlib/utilities/keyboard/
+ *
+ * Internal call stack:
+ *    run -> mappingnotify -> grabkeys
+ *    main -> setup -> grabkeys
+ */
 void
 grabkeys(void)
 {
+	/* First make sure that we have the right modifier for the Num Lock key */
 	updatenumlockmask();
+	/* Technically there isn't any practical reason why the below is placed within a separate
+	 * block, but it is most likely done so because the function otherwise breaks the general
+	 * pattern of declaring all variables at the start of the function, but here we need to make
+	 * the call to updatenumlockmask() first because we use the numlockmask variable when
+	 * declaring the modifiers array. The alternative could be to place all of the below in a
+	 * separate function but that would be less clean than simply adding it all in a block. */
 	{
 		unsigned int i, j;
+		/* The list of modifiers we are interested in. No additional modifier, the Lock mask,
+		 * the Num Lock mask, and Lock and Num Lock mask together. */
 		unsigned int modifiers[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
 		KeyCode code;
 
+		/* Call to release any keys we may have grabbed before. */
 		XUngrabKey(dpy, AnyKey, AnyModifier, root);
+		/* Loop through all the key bindings as defined in the configuration file.
+		 *
+		 * As a practical example let's look at this key binding:
+		 *
+		 *    { MODKEY,                       XK_b,      togglebar,      {0} },
+		 *
+		 * The binding is for clicking MOD+b to toggle the display of the bar on and off.
+		 *
+		 * To make this happen we need to let the X server know that we want to receive a
+		 * KeyPress event if the user holds down the modifier key and clicks the b key.
+		 * More so we want this to work regardless of whether Num Lock or general Lock is
+		 * enabled.
+		 *
+		 * The inner for loop runs through the modifiers that we listed in the modifiers
+		 * array earlier and combines each modifier with the modifier defined in the key
+		 * bindings array.
+		 *
+		 * This will lead to the window manager receiving KeyPress notifications in the
+		 * following scenarios:
+		 *    - user holds down MODKEY and clicks b
+		 *    - user holds down MODKEY and clicks b while Num Lock is on
+		 *    - user holds down MODKEY and clicks b while Lock is on
+		 *    - user holds down MODKEY and clicks b while both Num Lock and Lock is on
+		 *
+		 * It is worth noting that dwm only uses top level key bindings. For example
+		 * consider the default keybinding for killclient which is MOD+Shift+c:
+		 *
+		 *    { MODKEY|ShiftMask,             XK_c,      killclient,     {0} },
+		 *
+		 * The Shift key will generate an upper case C, so one might be inclined to think
+		 * that the following would work as well:
+		 *
+		 *    { MODKEY,                       XK_C,      killclient,     {0} },
+		 *
+		 * but it will not work, however, due to how the logic in the keypress function
+		 * handles modifiers and keysyms.
+		 */
 		for (i = 0; i < LENGTH(keys); i++)
 			if ((code = XKeysymToKeycode(dpy, keys[i].keysym)))
+				/* Loop through all the modifiers we are interested in */
 				for (j = 0; j < LENGTH(modifiers); j++)
+					/* Grab the key to tell the X server that we are interested
+					 * in receiving KeyPress notifications when the user clicks
+					 * on the key in combination with the given modifier. */
 					XGrabKey(dpy, code, keys[i].mod | modifiers[j], root,
 						True, GrabModeAsync, GrabModeAsync);
 	}
@@ -1032,7 +1269,7 @@ keypress(XEvent *e)
  * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
  * @calls XUngrabServer https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> keypress -> killclient -> sendevent
  */
 void
@@ -1154,7 +1391,7 @@ manage(Window w, XWindowAttributes *wa)
  * @calls XRefreshKeyboardMapping https://tronche.com/gui/x/xlib/utilities/keyboard/XRefreshKeyboardMapping.html
  * @see https://tronche.com/gui/x/xlib/events/window-state-change/mapping.html
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> mappingnotify -> grabkeys
  */
 void
@@ -1181,12 +1418,15 @@ mappingnotify(XEvent *e)
  * mapped anyway (presumably by the X server).
  *
  * @called_from run (the event handler)
+ * @called_from movemouse as it forwards events to maprequest
+ * @called_from resizemouse as it forwards events to maprequest
  * @calls XGetWindowAttributes https://tronche.com/gui/x/xlib/window-information/XGetWindowAttributes.html
  * @calls wintoclient to check whether the window manager is already managing this window
  * @calls manage to make the window manager manage the window and create the client
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> maprequest -> manage
+ *    run -> keypress -> movemouse / resizemouse -> maprequest
  */
 void
 maprequest(XEvent *e)
@@ -1228,7 +1468,7 @@ maprequest(XEvent *e)
  * @calls nexttiled to get the next tiled client
  * @calls resize to change the size and position of client windows
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> arrange -> arrangemon -> monocle
  */
 void
@@ -1275,7 +1515,7 @@ monocle(Monitor *m)
  * @calls unfocus in the event of the selected monitor changing
  * @calls focus in the event of the selected monitor changing
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> motionnotify
  */
 void
@@ -1377,7 +1617,7 @@ movemouse(const Arg *arg)
  * @called_from monocle for tiling purposes
  * @called_from zoom to check if the selected client is the master client
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> arrangemon -> tile / monocle -> nexttiled
  *    run -> keypress -> zoom -> nexttiled
  */
@@ -1399,7 +1639,7 @@ nexttiled(Client *c)
  * @calls focus to give the client becoming the new master input focus
  * @calls arrange to resize and reposition all tiled windows
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> keypress -> zoom -> pop
  */
 void
@@ -1454,7 +1694,7 @@ propertynotify(XEvent *e)
  *
  * @called_from keypress in relation to keybindings
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> keypress -> quit
  */
 void
@@ -1480,10 +1720,9 @@ quit(const Arg *arg)
  * @called_from resizemouse to check if a moved client window has moved over to another monitor
  * @called_from wintomon to check which monitor the mouse cursor is on
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> motionnotify -> recttomon
  *    run -> keypress -> movemouse / resizemouse -> recttomon
- *    run -> keypress -> resizemouse -> recttomon
  *    run -> buttonpress / enternotify / expose -> wintomon -> recttomon
  *    ~ -> updategeom -> wintomon -> rectomon
  */
@@ -1559,7 +1798,7 @@ recttomon(int x, int y, int w, int h)
  * @calls applysizehints to check if the window needs resizing taking size hints into account
  * @calls resizeclient to resize the client
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> arrange -> showhide -> resize
  *    ~ -> arrangemon -> monocle / tile -> resize
  *    run -> keypress -> movemouse / resizemouse / togglefloating -> resize
@@ -1580,7 +1819,7 @@ resize(Client *c, int x, int y, int w, int h, int interact)
  * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
  * @calls configure to send an event to the window indicating that the size has changed
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> resize -> resizeclient
  *    ~ -> clientmessage / updatewindowtype -> setfullscreen -> resizeclient
  *    run -> configurenotify -> resizeclient
@@ -1777,7 +2016,7 @@ setclientstate(Client *c, long state)
  * @see https://tronche.com/gui/x/xlib/events/client-communication/client-message.html#XClientMessageEvent
  * @returns 1 if the client window supports the given protocol, 0 otherwise
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> focus -> setfocus -> sendevent
  *    run -> keypress -> killclient -> sendevent
  *    run -> focusin -> setfocus -> sendevent
@@ -1831,7 +2070,7 @@ sendevent(Client *c, Atom proto)
  * @calls sendevent to tell the window to take focus
  * @see updatewmhints for how c->neverfocus is set
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> focus -> setfocus -> sendevent
  *    run -> focusin -> setfocus -> sendevent
  */
@@ -1937,7 +2176,7 @@ setlayout(const Arg *arg)
  * @called_from keypress in relation to keybindings
  * @calls arrange to reposition and resize clients after the mfact has been changed
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> keypress -> setmfact
  */
 void
@@ -2064,7 +2303,7 @@ setup(void)
  * @see drawbar for how the c->isurgent is used to indicate urgent tags in the bar
  * @see clientmessage for an example showing how you can test the setting of the urgency bit
  *
- * Internal execution path:
+ * Internal call stack:
  *    ~ -> focus -> seturgent
  *    run -> clientmessage -> seturgent
  */
@@ -2138,7 +2377,7 @@ showhide(Client *c)
  * @calls waitpid https://linux.die.net/man/3/waitpid
  * @see https://linux.die.net/man/2/sigaction
 
- * Internal execution path:
+ * Internal call stack:
  *    main -> setup -> sigchld
  */
 void
@@ -2213,26 +2452,71 @@ tile(Monitor *m)
 		}
 }
 
+/* User function to toggle the display on and off on the selected monitor.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls updatebarpos to adjust the monitor's window area
+ * @calls XMoveResizeWindow https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
+ * @calls arrange to reposition and resize tiled clients
+ *
+ * Internal call stack:
+ *    run -> keypress -> togglebar
+ */
 void
 togglebar(const Arg *arg)
 {
+	/* Toggle the internal flag indicating whether the bar is shown or not */
 	selmon->showbar = !selmon->showbar;
+	/* The call to updatebarpos makes dwm adjust:
+	 *    - the bar y position (m->by) depending on whether the bar is shown or not and
+	 *    - the monitor's window area
+	 */
 	updatebarpos(selmon);
+	/* This moves the bar window into or out of view depending on the value of m->by which is
+	 * set by the updatebarpos call above */
 	XMoveResizeWindow(dpy, selmon->barwin, selmon->wx, selmon->by, selmon->ww, bh);
+	/* A final arrange call to make tiled clients take advantage of the additional space when
+	 * the bar is toggled away, or to give room for the bar when the bar is shown. */
 	arrange(selmon);
 }
 
+/* User function to toggle the floating status for the selected client.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @called_from movemouse when a tiled window snaps out and becomes floating
+ * @called_from resizemouse when a tiled window snaps out and becomes floating
+ * @calls resize to apply size hints for the client when it becomes floating
+ * @calls arrange to reposition and resize tiled clients
+ *
+ * Internal call stack:
+ *    run -> keypress -> togglefloating
+ *    run -> keypress -> movemouse / resizemouse -> togglefloating
+ *    run -> buttonpress -> togglefloating
+ */
 void
 togglefloating(const Arg *arg)
 {
+	/* If there is no selected client then bail. */
 	if (!selmon->sel)
 		return;
+	/* If the selected client is in fullscreen then bail. */
 	if (selmon->sel->isfullscreen) /* no support for fullscreen windows */
 		return;
+	/* Toggle the floating state of the selected client. While most windows can toggle freely
+	 * between floating and tiled some windows that are fixed in size can not and these remain
+	 * floating. A window is considered to be fixed in size if its size hints say that it has
+	 * a minimum size and a maximum size that is equal to the minimum size. */
 	selmon->sel->isfloating = !selmon->sel->isfloating || selmon->sel->isfixed;
 	if (selmon->sel->isfloating)
+		/* Here we have an explicit call to resize if the window has become floating. This
+		 * call is only to allow the size hints for the window to be applied in the event
+		 * that the resizehints setting has been set to 0, which makes dwm disrepect a
+		 * client's size hints when tiled.
+		 */
 		resize(selmon->sel, selmon->sel->x, selmon->sel->y,
 			selmon->sel->w, selmon->sel->h, 0);
+	/* A final arrange call to reposition and resize tiled clients */
 	arrange(selmon);
 }
 
@@ -2276,40 +2560,119 @@ unfocus(Client *c, int setfocus)
 	}
 }
 
+/* This function controls what happens when the window manager stops managing a window.
+ *
+ * @called_from cleanup to unmanage all client windows before exiting dwm
+ * @called_from destroynotify to stop managing the window and remove the client
+ * @called_from unmapnotify to stop managing the window and remove the client
+ * @calls XGrabServer https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
+ * @calls XSetErrorHandler https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
+ * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+ * @calls XUngrabButton https://tronche.com/gui/x/xlib/input/XUngrabButton.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls detach to remove the client from the tile stack
+ * @calls detachstack to remove the client from the stacking order
+ * @calls setclientstate to set the client state to withdrawn state
+ * @calls free to release memory used by the client struct
+ * @calls updateclientlist to remove the window from the _NET_CLIENT_LIST property
+ *
+ * Internal call stack:
+ *    run -> destroynotify / unmapnotify -> unmanage
+ */
 void
 unmanage(Client *c, int destroyed)
 {
 	Monitor *m = c->mon;
 	XWindowChanges wc;
 
+	/* Remove the given client from both the client list and the stack order list. */
 	detach(c);
 	detachstack(c);
+	/* If the window has already been destroyed then we don't have to take any further action
+	 * with regards to the window itself. The function parameter destroyed will be true (1) if
+	 * unmanage is called from the destroynotify function.
+	 */
 	if (!destroyed) {
 		wc.border_width = c->oldbw;
+		/* This disables processing of requests and close downs on all other connections than
+		 * the one this request arrived on. */
 		XGrabServer(dpy); /* avoid race conditions */
+		/* Here we set the dummy X error handler just in case what we do next is going to
+		 * generate an error that would otherwise cause dwm to exit. */
 		XSetErrorHandler(xerrordummy);
+		/* This is to clear / remove the border that is drawn around the window */
 		XConfigureWindow(dpy, c->win, CWBorderWidth, &wc); /* restore border */
+		/* Stop listening for any button press notification for this window */
 		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+		/* Change the client state to withdrawn (not shown) */
 		setclientstate(c, WithdrawnState);
+		/* This flushes the output buffer and then waits until all requests have been
+		 * received and processed by the X server. */
 		XSync(dpy, False);
+		/* Revert to the normal X error handler */
 		XSetErrorHandler(xerror);
+		/* This restarts processing of requests and close downs on other connections */
 		XUngrabServer(dpy);
 	}
+	/* Free memory consumed by the client structure */
 	free(c);
+	/* Focus on the next client in the stacking order */
 	focus(NULL);
+	/* As we have one less window being managed by the window manager we should update the
+	 * _NET_CLIENT_LIST property of the root window. */
 	updateclientlist();
+	/* Finally an arrange call to allow the remaining tiled clients to take advantage of the
+	 * space the unmanaged window left behind. */
 	arrange(m);
 }
 
+/* This handles UnmapNotify events coming from the X server.
+ *
+ * This can happen if a client's window state goes from from mapped to unmapped.
+ *
+ * You can test this by finding the window ID of a given window using xwininfo (e.g. 0x5000002) or
+ * using xdotool search (94371846) and using xdo or xdotool to map and unmap that window.
+ *
+ *    $ xdo hide 0x5a00006
+ *    $ xdo show 0x5a00006
+ *    $ xdotool windowunmap 94371846
+ *    $ xdotool windowmap 94371846
+ *
+ * @called_from run (the event handler)
+ * @calls wintoclient to find the client the given event is related to
+ * @calls setclientstate to move the client to withdrawn state
+ * @calls unmanage to stop managing the window and remove the client
+ * @see https://tronche.com/gui/x/xlib/events/window-state-change/unmap.html
+ * @see https://linux.die.net/man/3/xunmapevent
+ * @see https://tronche.com/gui/x/xlib/event-handling/XSendEvent.html
+ * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XWithdrawWindow.html
+ *
+ * Internal call stack:
+ *    run -> unmapnotify
+ */
 void
 unmapnotify(XEvent *e)
 {
 	Client *c;
 	XUnmapEvent *ev = &e->xunmap;
 
+	/* Find the client the event is for. If the event is for a client window that is not managed
+	 * by the window manager then we do nothing. */
 	if ((c = wintoclient(ev->window))) {
+		/* The ev->send_event indicates whether the request originates from an XSendEvent
+		 * call or not. If that is the case then it means that the unmapping of the window
+		 * was intentional (e.g. the user ran a command to do so or the application manages
+		 * the window that way).
+		 *
+		 * As such if the unmapping was intentional then we set the window state to withdrawn
+		 * which means that the window is simply not visible.
+		 */
 		if (ev->send_event)
 			setclientstate(c, WithdrawnState);
+		/* On the other hand if the unmapping was not intentional, not originating from an
+		 * XSendEvent call, then that must mean that the unmap notification originates from
+		 * the X server. As such we should stop managing this window and remove the client.
+		 */
 		else
 			unmanage(c, 0);
 	}
@@ -2337,9 +2700,25 @@ updatebars(void)
 	}
 }
 
+/* This updates the bar position and sets the monitor's window area accordingly.
+ *
+ * @called_from togglebar to adjust the monitor's window area after showing or hiding the bar
+ * @called_from updategeom to set the bar position and the monitor's window area for new monitors
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom -> updatebarpos
+ *    setup -> updategeom -> updatebarpos
+ */
 void
 updatebarpos(Monitor *m)
 {
+	/* This sets the monitor window area to span the entire monitor. If the bar is shown then
+	 * we adjust for that later.
+	 *
+	 * You may notice the omission of setting the window area width and x position here. This
+	 * is because the bar is only at the top or at the bottom, hence the horizontal aspects
+	 * of the window area is not influenced by the presence or non-presence of the bar.
+	 */
 	m->wy = m->my;
 	m->wh = m->mh;
 	if (m->showbar) {
@@ -2347,18 +2726,51 @@ updatebarpos(Monitor *m)
 		m->by = m->topbar ? m->wy : m->wy + m->wh;
 		m->wy = m->topbar ? m->wy + bh : m->wy;
 	} else
+		/* The bar is not shown and because we already set the window area to span the
+		 * entire monitor all we need to do now is to set the bar position to a negative
+		 * position so that it is not shown. By setting it to -bh the bar is just above
+		 * the visible area of the monitor. */
 		m->by = -bh;
 }
 
+/* This updates the _NET_CLIENT_LIST property on the root window.
+ *
+ * The _NET_CLIENT_LIST property is a list of window IDs that the window manager manages. When a
+ * new window is managed then the window ID is appended to this list and this takes place in the
+ * manage function.
+ *
+ * When windows are unmanaged (i.e. closed) then it is not straightforward to manipulate the list
+ * in this property and the simplest solution is to just delete the list and generate a new one
+ * based on all the remaining clients that are still managed.
+ *
+ * You can check this using the below command and clicking on the desktop background (wallpaper).
+ *
+ *    $ xprop | grep _NET_CLIENT_LIST
+ *    _NET_CLIENT_LIST(WINDOW): window id # 0x4e00002, 0x7000002, 0x6e00001, 0x6200002
+ *
+ * @called_from unmanage to remove unmanaged windows from _NET_CLIENT_LIST
+ * @calls XDeleteProperty https://tronche.com/gui/x/xlib/window-information/XDeleteProperty.html
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ * @see manage for how it updates _NET_CLIENT_LIST for new managed windows
+ * @see https://specifications.freedesktop.org/wm-spec/1.3/ar01s03.html
+ *
+ * Internal call stack:
+ *    run -> destroynotify / unmapnotify -> unmanage -> updateclientlist
+ *    main -> cleanup -> unmanage -> updateclientlist
+ */
 void
 updateclientlist()
 {
 	Client *c;
 	Monitor *m;
 
+	/* Delete the existing client list */
 	XDeleteProperty(dpy, root, netatom[NetClientList]);
+	/* Loop through each monitor */
 	for (m = mons; m; m = m->next)
+		/* and loop through each client for each monitor */
 		for (c = m->clients; c; c = c->next)
+			/* then add (append) the window ID of each client to the client list */
 			XChangeProperty(dpy, root, netatom[NetClientList],
 				XA_WINDOW, 32, PropModeAppend,
 				(unsigned char *) &(c->win), 1);
@@ -2442,19 +2854,59 @@ updategeom(void)
 	return dirty;
 }
 
+/* This function sets or updates the internal Num Lock mask variable.
+ *
+ * As per the tronche documentation we have that:
+ *    The operation of keypad keys is controlled by the KeySym named XK_Num_Lock, by attaching
+ *    that KeySym to some KeyCode and attaching that KeyCode to any one of the modifiers Mod1
+ *    through Mod5. This modifier is called the numlock modifier.
+ *
+ * What this boils down to is that it is not straightforward to reference the Num Lock mask
+ * compared to, say, ControlMask or ShiftMask.
+ *
+ * To work out what the Num Lock mask is we need to loop through all the modifier mappings to find
+ * the one that refers to the Num Lock button, and that is exactly what this function does.
+ *
+ * Once this is found the modifier is stored in the global and static numlockmask variable. This
+ * is later used in the context of handling key and button presses.
+ *
+ * @called_from grabbuttons to make sure the numlock modifier is correct before grabbing buttons
+ * @called_from grabkeys to make sure the numlock modifier is correct before grabbing keys
+ * @calls XGetModifierMapping https://tronche.com/gui/x/xlib/input/XGetModifierMapping.html
+ * @calls XKeysymToKeycode https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToKeycode.html
+ * @calls XFreeModifiermap https://tronche.com/gui/x/xlib/input/XFreeModifiermap.html
+ * @see https://tronche.com/gui/x/xlib/utilities/keyboard/
+ * @see https://tronche.com/gui/x/xlib/input/keyboard-encoding.html#XModifierKeymap
+ *
+ * Internal call stack:
+ *    ~ -> focus / unfocus -> grabbuttons -> updatenumlockmask
+ *    run -> maprequest -> manage -> grabbuttons -> updatenumlockmask
+ *    run -> mappingnotify -> grabkeys -> updatenumlockmask
+ *    main -> setup -> grabkeys -> updatenumlockmask
+ */
 void
 updatenumlockmask(void)
 {
 	unsigned int i, j;
 	XModifierKeymap *modmap;
 
+	/* Clear the num lock mask variable to cover for the edge case where the modifier is
+	 * disabled and there is no Num Lock key to be found. */
 	numlockmask = 0;
+	/* This retrieves a new modifier mapping structure that contains the keys being used as
+	 * modifiers. */
 	modmap = XGetModifierMapping(dpy);
+	/* We loop through each modifier */
 	for (i = 0; i < 8; i++)
+		/* and we loop through each key per modifier */
 		for (j = 0; j < modmap->max_keypermod; j++)
+			/* If the modifier key is the Num Lock key then store the bitwise mask of
+			 * the modifier in the global numlockmask variable. */
 			if (modmap->modifiermap[i * modmap->max_keypermod + j]
 				== XKeysymToKeycode(dpy, XK_Num_Lock))
 				numlockmask = (1 << i);
+	/* The caller of XGetModifierMapping is responsible for freeing the memory used by the
+	 * returned modifier key map. */
 	XFreeModifiermap(modmap);
 }
 
@@ -2562,19 +3014,62 @@ view(const Arg *arg)
 	arrange(selmon);
 }
 
+/* Internal function to search for a client that is associated with a given window.
+ *
+ * This is called from most event handling functions to translate window IDs to client references.
+ *
+ * @called_from buttonpress to check whether a mouse button click was on a client window
+ * @called_from clientmessage to find the client the received message event is for
+ * @called_from configurerequest to find the client the received request event is for
+ * @called_from destroynotify to find the client the destroy notification is for
+ * @called_from enternotify to find the client the enter notification is for
+ * @called_from manage to search for the parent window of transient windows
+ * @called_from maprequest to sanity check that the window is not already managed by the WM
+ * @called_from propertynotify to find the client the property notification is for
+ * @called_from unmapnotify to find the client the unmap notification is for
+ * @called_from wintomon to find the monitor the given window is on (via the client)
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> wintoclient
+ *    run -> buttonpress / enternotify / expose -> wintomon -> wintoclient
+ *    run -> buttonpress / clientmessage / configurerequest / maprequest -> wintoclient
+ *    run -> destroynotify / enternotify / propertynotify / unmapnotify -> wintoclient
+ *    run -> configurenotify -> updategeom -> wintomon -> wintoclient
+ *    setup -> updategeom -> wintomon -> wintoclient
+ */
 Client *
 wintoclient(Window w)
 {
 	Client *c;
 	Monitor *m;
 
+	/* Loop through all monitors */
 	for (m = mons; m; m = m->next)
+		/* Loop through all clients for each monitor */
 		for (c = m->clients; c; c = c->next)
+			/* If we find the client associated with the given window then return it */
 			if (c->win == w)
 				return c;
+	/* Return NULL to indicate that we did not find a client related to the given window. This
+	 * means that the window is not managed by the window manager. */
 	return NULL;
 }
 
+/* Internal function to find the monitor a given window is on.
+ *
+ * @called_from buttonpress to work out which monitor a button press was made on
+ * @called_from enternotify to work out what monitor the enter notification is for
+ * @called_from expose to work out what monitor the expose event was is
+ * @called_from updategeom to find the monitor the mouse cursor resides on
+ * @calls getrooptr to find the mouse pointer coordinates if window is the root window
+ * @calls recttomon to find the monitor the mouse pointer is on
+ * @calls wintoclient to find the client related to the given window
+ *
+ * Internal call stack:
+ *    run -> buttonpress / enternotify / expose -> wintomon
+ *    run -> configurenotify -> updategeom -> wintomon
+ *    setup -> updategeom -> wintomon
+ */
 Monitor *
 wintomon(Window w)
 {
@@ -2582,13 +3077,24 @@ wintomon(Window w)
 	Client *c;
 	Monitor *m;
 
+	/* If the given window is the root window then retrieve the mouse coordinates and pass
+	 * these on to recttomon to work out what monitor the mouse pointer is on. */
 	if (w == root && getrootptr(&x, &y))
 		return recttomon(x, y, 1, 1);
+	/* Loop through all monitors */
 	for (m = mons; m; m = m->next)
+		/* Check if the given window is the bar window, if so then we know what monitor that
+		 * window resides on. */
 		if (w == m->barwin)
 			return m;
+	/* Check if the given window is one of the managed clients, and if so then return the
+	 * monitor that client is assigned to. */
 	if ((c = wintoclient(w)))
 		return c->mon;
+	/* If we come here then we are at a loss; the given window is not known to us and it is
+	 * not managed by the window manager. Fall back to just returning the currently selected
+	 * monitor.
+	 */
 	return selmon;
 }
 
@@ -2615,7 +3121,7 @@ xerror(Display *dpy, XErrorEvent *ee)
 
 /* A dummy X error handler that just ignores any X errors.
  *
- * @see killclient that sets this function as the error handler when forcibly
+ * @see killclient that sets this function as the error handler when terminating windows
  */
 int
 xerrordummy(Display *dpy, XErrorEvent *ee)
@@ -2623,9 +3129,9 @@ xerrordummy(Display *dpy, XErrorEvent *ee)
 	return 0;
 }
 
-/* Startup Error handler to check if another window manager
- * is already running.
+/* Startup Error handler to check if another window manager is already running.
  *
+ * @calls die to print errors and exit dwm (see util.c)
  * @see checkotherwm which sets this function as the X error handler
  */
 int
@@ -2642,7 +3148,7 @@ xerrorstart(Display *dpy, XErrorEvent *ee)
  * @calls nexttiled to check if the selected client is the master client
  * @calls pop to move the client to the top of the tile stack, making it the new master window
  *
- * Internal execution path:
+ * Internal call stack:
  *    run -> keypress -> zoom
  */
 void
