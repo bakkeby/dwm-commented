@@ -46,9 +46,9 @@
 
 /* macros */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
-/* The CLEANMASK macro removes the Num Lock mask and Lock masks from a given bit mask.
+/* The CLEANMASK macro removes Num Lock mask and Lock mask from a given bit mask.
  * Refer to the numlockmask variable comment for more details on the Num Lock mask.
- * The CLEANMASK macro is used in the grabkeys and grabbuttons functions. */
+ * The CLEANMASK macro is used in the keypress and buttonpress functions. */
 #define CLEANMASK(mask)         (mask & ~(numlockmask|LockMask) & (ShiftMask|ControlMask|Mod1Mask|Mod2Mask|Mod3Mask|Mod4Mask|Mod5Mask))
 /* Calculates how much a monitor's window area intersects with a given size and position.
  * See the writeup in the recttomon function for more information on this. */
@@ -146,7 +146,9 @@ typedef struct {
 	int monitor;
 } Rule;
 
-/* function declarations */
+/* Function declarations. All functions are declared for visibility and overview reasons. The
+ * declarations as well as the functions themselves are sorted alphabetically so that they should
+ * be easier to find and maintain. */
 static void applyrules(Client *c);
 static int applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact);
 static void arrange(Monitor *m);
@@ -241,24 +243,47 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 static void zoom(const Arg *arg);
 
 /* variables */
+/* This is used as a fallback text for windows that do not have a windwow title / name set */
 static const char broken[] = "broken";
+/* This array of characters holds the status text */
 static char stext[256];
+/* This holds the default screen value, used when creating windows and handling the display etc. */
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
+/* bh is short for bar height, as in how tall the bar is.
+ * blw is short for bar layout width and it is set in the drawbar function based on the layout
+ * symbol and it is read in the buttonpress function when determining whether the user clicked on
+ * the layout symbol or not.
+ */
 static int bh, blw = 0;      /* bar geometry */
 static int lrpad;            /* sum of left and right padding for text */
+/* This is the reference we store the X error handler in and it is used in the xerror function for
+ * any errors that are not simply ignored. Search the code for xerrorxlib to see how this set and
+ * used. */
 static int (*xerrorxlib)(Display *, XErrorEvent *);
-/* The static global numlockmask variable that holds the modifier
- * that is related to the Num Lock key.
+/* The static global numlockmask variable that holds the modifier that is related to the
+ * Num Lock key.
  *
- * @set_in updatenumlockmask
- * @used_by grabkeys
- * @used_by grabbuttons
- * @used_by buttonpress (via the CLEANMASK macro)
- * @used_by keypress (via the CLEANMASK macro)
- * @see CLEANMASK macro
+ * This is set in the updatenumlockmask function based on the presence of the Num Lock key in the
+ * modifier map. This is then later used to subscribe to KeyPress and ButtonPress events involving
+ * the Num Lock keys in the grabkeys and grabbuttons functions.
+ *
+ * Additionally the variable is used in the CLEANMASK macro which omits the Num Lock and Caps Lock
+ * modifiers from a given modifier mask. This macro is then used in both the buttonpress and
+ * keypress functions to ignore Num Lock and Caps Lock when looking for matching keypress or button
+ * press combinations.
  */
 static unsigned int numlockmask = 0;
+/* This is what maps event types to the functions that handles those event types.
+ *
+ * This is primarily used in the run function which handles the event loop, but it is also used
+ * in the movemouse and resizemouse functions that temporarily hooks into the event loop for a few
+ * select event types while client windows are being moved or resized.
+ *
+ * As per the header comment at the top of this file we have that:
+ *    The event handlers of dwm are organized in an array which is accessed whenever
+ *    a new event has been fetched. This allows event dispatching in O(1) time.
+ */
 static void (*handler[LASTEvent]) (XEvent *) = {
 	[ButtonPress] = buttonpress,
 	[ClientMessage] = clientmessage,
@@ -275,13 +300,25 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[PropertyNotify] = propertynotify,
 	[UnmapNotify] = unmapnotify
 };
+/* This initialises the wmatom and netatom arrays which holds X atom references */
 static Atom wmatom[WMLast], netatom[NetLast];
+/* The global running variable indicates whether the window manager is running. When set to 0 then
+ * the window manager will exit out of the event loop in the run function and make dwm exit the
+ * process gracefully. */
 static int running = 1;
+/* This holds the various mouse cursor types used by the window manager. */
 static Cur *cursor[CurLast];
+/* This holds a reference to the array of colour schemes. */
 static Clr **scheme;
+/* This holds a reference to the display that we have opened. */
 static Display *dpy;
+/* This holds a reference to the drawable that we have created. Refer to the struct definition in
+ * the drw.h file. */
 static Drw *drw;
+/* Two references to hold the first and selected monitors. */
 static Monitor *mons, *selmon;
+/* Two window references, one for the root window and one for the supporting window. More on the
+ * latter in the setup function. */
 static Window root, wmcheckwin;
 
 /* configuration, allows nested code to access above variables */
@@ -417,114 +454,417 @@ arrangemon(Monitor *m)
 		m->lt[m->sellt]->arrange(m);
 }
 
+/* This inserts a client at the top of the monitor's client list.
+ *
+ * The client list is a linked list of client structures where one client refers to the next.
+ * This list is primarily used:
+ *    - for managing the order in which client windows are tiled and
+ *    - to keep track of the clients that are managed by the window manager on a specific monitor
+ *
+ * Usage warnings:
+ *    - a client must be detached before it can be attached again
+ *    - there is no guard preventing an already attached client from being attached again
+ *    - attaching an already attached client will most likely result in an infinite loop and dwm
+ *      freezing with high CPU usage
+ *    - when moving clients from one monitor to another the client needs to be detached from both
+ *      the client list and the client stack before the monitor is changed
+ *    - detaching a client does not remove its references to other clients
+ *
+ * @called_from manage when the window manager manages a new window
+ * @called_from pop reattach a client to become the new master client
+ * @called_from sendmon to attach the client to the new monitor
+ * @called_from updategeom when the number of monitors is reduced
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> attach
+ *    run -> keypress -> zoom -> pop -> attach
+ *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> attach
+ *    run -> configurenotify -> updategeom -> attach
+ */
 void
 attach(Client *c)
 {
+	/* This sets the given client's next reference to the head of the list, then it sets the
+	 * head of the list to become the given client. In practice the given client becomes the
+	 * first client in the linked list. */
 	c->next = c->mon->clients;
 	c->mon->clients = c;
 }
 
+/* This inserts a client at the top of the monitor's stacking order.
+ *
+ * The stacking order is a linked list of client structures where one client refers to the next.
+ * This list is primarily used:
+ *    - for managing the order in which client windows placed on top of each other
+ *
+ * Refer to the writeup for the attach function for usage warnings.
+ *
+ * @called_from manage when the window manager manages a new window
+ * @called_from sendmon to attach the client to the new monitor
+ * @called_from updategeom when the number of monitors is reduced
+ *
+ * Internal call stack:
+ *    ~ -> focus -> attachstack
+ *    run -> maprequest -> manage -> attachstack
+ *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> attachstack
+ *    run -> configurenotify -> updategeom -> attachstack
+ */
 void
 attachstack(Client *c)
 {
+	/* This sets the given client's snext reference to the head of the list, then it sets the
+	 * head of the list to become the given client. In practice the given client becomes the
+	 * first client in the stack. */
 	c->snext = c->mon->stack;
 	c->mon->stack = c;
 }
 
+/* This handles ButtonPress events coming from the X server.
+ *
+ * Most of this function has to do with working out what exactly the user clicked on, which is
+ * represented by the clicks enum:
+ *
+ *    enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle,
+ *           ClkClientWin, ClkRootWin, ClkLast };
+ *
+ * In practice this boils down to:
+ *   - the root window or
+ *   - a client window or
+ *   - the bar window, in which case the part of the bar the user clicked on was:
+ *      -- one of the tag icons or
+ *      -- the layout symbol or
+ *      -- the window title or
+ *      -- the status text
+ *
+ * Once that is known it will loop through all the button bindings as defined in the buttons array
+ * in the configuration file to look for bindings that match the click type combined with the mouse
+ * button pressed along with modifier keys. If such a button binding is found then the function
+ * set in the array will be executed with given argument.
+ *
+ * For details on how things are set up in order to get these ButtonPress events in the first place
+ * refer to the grabbuttons function.
+ *
+ * @called_from run (the event handler)
+ * @calls XAllowEvents https://tronche.com/gui/x/xlib/input/XAllowEvents.html
+ * @calls wintomon to check whether the button click happened on another monitor
+ * @calls wintoclient to check whether the button click was on a client window
+ * @calls focus to change focus to a different client or a different monitor
+ * @calls unfocus to unfocus the selected client on the previous monitor
+ * @calls restack to bring the clicked client to the front in case it is floating
+ * @calls functions as defined in the buttons array
+ * @see grabbuttons for how the window manager registers for button presses on windows
+ *
+ * Internal call stack:
+ *    run -> buttonpress
+ */
 void
 buttonpress(XEvent *e)
 {
 	unsigned int i, x, click;
-	Arg arg = {0};
+	Arg arg = {0}; /* Argument to store the tag index in case the user clicks on a tag icon */
 	Client *c;
 	Monitor *m;
 	XButtonPressedEvent *ev = &e->xbutton;
 
+	/* Default to clicking on the root window, as in the background wallpaper */
 	click = ClkRootWin;
-	/* focus monitor if necessary */
+	/* If the button click was on a monitor other than the currently focused monitor, then
+	 * change the selected monitor to the monitor the user clicked on. */
 	if ((m = wintomon(ev->window)) && m != selmon) {
+		/* The unfocus call here is primarily because we could be moving from a monitor with
+		 * clients to one with none, in which case we would want to revert the input focus
+		 * back to the root window (note the passing of 1 for the setfocus parameter to
+		 * unfocus). Additionally we want the client border to change colour to indicate that
+		 * it does not have focus. */
 		unfocus(selmon->sel, 1);
+		/* This just sets the selected monitor to the monitor the mouse click happened on */
 		selmon = m;
+		/* Focus on the last focused client on this monitor (if any) */
 		focus(NULL);
 	}
+	/* This checks if the mouse click was on the bar, in which case we need to work out what
+	 * part of the bar the user clicked on. */
 	if (ev->window == selmon->barwin) {
+		/* This section of code calculates what the user clicked on by looking at the text
+		 * width of tag icons, the layout symbol and the status text.
+		 *
+		 * In practice you may think of it as going through the same steps as drawing the
+		 * bar, but this time we only calculate where things would have been drawn if we
+		 * were to draw them. As such the following code must mirror exactly what the
+		 * drawbar function does as otherwise that can lead to mouse click misalignment.
+		 */
 		i = x = 0;
+		/* This do while loop goes through each tag icon and increments x with the width of
+		 * the tag. Then it will check if the x position is larger than the mouse click
+		 * position and if it is then it will break out of the while loop.
+		 *
+		 * On the other hand if it is not then it will increment the iterator i and continue
+		 * with the next tag icon until it has gone through all tags.
+		 */
 		do
 			x += TEXTW(tags[i]);
 		while (ev->x >= x && ++i < LENGTH(tags));
+		/* If the previous do while loop stopped before it had gone through all tags then
+		 * that means that the user clicked on one of the tags in the bar. */
 		if (i < LENGTH(tags)) {
+			/* We set the click type to ClkTagBar to indicate that the user clicked on
+			 * one of the tags, and the i iterator shows what tag was clicked. */
 			click = ClkTagBar;
+			/* The view, toggleview, tag and toggletag functions takes a bitmask argument
+			 * rather than a simple index hence we do a binary shift when setting the
+			 * argument for those functions. E.g. when the user clicks on tag 6 then the
+			 * iterator i will be 5, and shifting 1 five times to the left gives a binary
+			 * bitmask value of 00100000. */
 			arg.ui = 1 << i;
+		/* If we did exhaust all the tag icons then we check if the user must have clicked
+		 * on the layout symbol.
+		 *
+		 * The variable blw is short for bar layout width and this is set in the drawbar
+		 * function when drawing the bar. The need for having a global variable to hold this
+		 * information rather than just using TEXTW(m->ltsymbol) is bizarre to say the least,
+		 * but presumably this has to do with that it is possible that the layout symbol of
+		 * the monitor has been changed since the bar was last drawn (or that may have been
+		 * the case in previous iterations of dwm). The variable is set based on the last bar
+		 * that was drawn which in principle could be for another monitor - in which case the
+		 * blw value could be wrong for the current monitor. */
 		} else if (ev->x < x + blw)
 			click = ClkLtSymbol;
+		/* If the click was to the right of the layout symbol then we need to check if the
+		 * click was on the status text, which is drawn to the far right of the bar. We do
+		 * not actually know the width of the client window title */
 		else if (ev->x > selmon->ww - (int)TEXTW(stext))
 			click = ClkStatusText;
+		/* The click was not to the left and not to the right, so the click must have been
+		 * on the window title. */
 		else
 			click = ClkWinTitle;
+	/* If the click was not on the bar window then check if the click was on one of the client
+	 * windows. If it was not then the click is assumed to have been on the root window. */
 	} else if ((c = wintoclient(ev->window))) {
+		/* If we click on a client window then give that window input focus. We want this to
+		 * be the selected client. */
 		focus(c);
+		/* If the window we clicked on was a floating window then we want that window to be
+		 * shown on top of other floating windows. The restack call takes care of that. */
 		restack(selmon);
+		/* This has specifically to do with events sent to windows that grab the mouse
+		 * pointer when you click on them. The XAllowEvents with the ReplayPointer event mode
+		 * releases that pointer grab allowing for the event to be reprocessed. The important
+		 * thing is that this call has no effect if the window does not grab the mouse
+		 * pointer. Refer to the documentation for XAllowEvents for more details. */
 		XAllowEvents(dpy, ReplayPointer, CurrentTime);
 		click = ClkClientWin;
 	}
+	/* This section finally loops through all the button bindings looking for matches. */
 	for (i = 0; i < LENGTH(buttons); i++)
+		/* Let's break down the matching process here with an example.
+		 *
+		 *      click                 event mask      button        function        argument
+		 *    { ClkClientWin,         MODKEY,         Button3,      resizemouse,    {0} },
+		 *
+		 * This checks that the click type, e.g. ClkClientWin, matches:
+		 *    click == buttons[i].click &&
+		 *
+		 * Button bindings without a function are simply ignored:
+		 *    buttons[i].func &&
+		 *
+		 * This checks that the button matches, e.g. Button3 - right click:
+		 *    buttons[i].button == ev->button
+		 *
+		 * This checks that the modifier matches:
+		 *    CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state)
+		 *
+		 * It is worth noting that the CLEANMASK macro removes Num Lock and Caps Lock mask
+		 * from the button mask as well as the event state. This has to do with that we want
+		 * these button bindings to work regardless of whether Num Lock and/or Caps Lock is
+		 * enabled or not. See the grabbuttons function for how the subscribe to all the
+		 * button combinations to cover this.
+		 */
 		if (click == buttons[i].click && buttons[i].func && buttons[i].button == ev->button
 		&& CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
+			/* If we have a match then we call the associated function with the given
+			 * argument, unless the user clicked on the tags in which case we pass the
+			 * argument with the bitmask we set previously. */
 			buttons[i].func(click == ClkTagBar && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
+			/* Note that there is no break; following this, which means that we will
+			 * continue searching through the button bindings for more matches. As such
+			 * it is possible to have more than one thing happen when a button is clicked
+			 * by having the same button bindings multiple times referring to different
+			 * functions. */
 }
 
+/* This checks whether another window manager is already running and if so then dwm is exited
+ * gracefully.
+ *
+ * @called_from main to check whether another window manager is already running
+ * @calls XSetErrorHandler https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
+ * @calls XSelectInput https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
+ * @calls DefaultRootWindow a macro that returns the root window for the default screen
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @see https://tronche.com/gui/x/xlib/display/display-macros.html
+ * @see xerrorstart which bails on any X error
+ *
+ * Internal call stack:
+ *    main -> checkotherwm
+ */
 void
 checkotherwm(void)
 {
+	/* This sets the X error handler to xerrorstart which will make dwm exit on any X error */
 	xerrorxlib = XSetErrorHandler(xerrorstart);
-	/* this causes an error if some other window manager is running */
+	/* This causes an error if some other window manager is running. This has to do with that
+	 * X only allows for a single connection to do this.
+	 *
+	 * As outlined in the header comment of dwm.c:
+	 *    In contrast to other X clients, a window manager selects for SubstructureRedirectMask
+	 *    on the root window, to receive events about window (dis-)appearance. Only one X
+	 *    connection at a time is allowed to select for this event mask.
+	 */
 	XSelectInput(dpy, DefaultRootWindow(dpy), SubstructureRedirectMask);
+	/* This flushes the output buffer and then waits until all requests have been
+	 * received and processed by the X server. */
 	XSync(dpy, False);
+	/* Set the error handler back to the normal one. */
 	XSetErrorHandler(xerror);
+	/* Repeat */
 	XSync(dpy, False);
 }
 
+/* This function handles all cleanup that is needed before exiting which involves:
+ *    - unmanaging all windows that are managed by the window manager
+ *    - releasing all keybindings
+ *    - tearing down all monitors
+ *    - freeing cursors
+ *    - freeing colour schemes and their colours
+ *    - destroying the supporting window
+ *    - free the drawable
+ *    - reverting input focus and clearing the _NET_ACTIVE_WINDOW property of the root window
+ *
+ * @called_from main before exiting dwm_NET_SUPPORTING_WM_CHECK
+ * @calls XDestroyWindow https://tronche.com/gui/x/xlib/window/XDestroyWindow.html
+ * @calls XDeleteProperty https://tronche.com/gui/x/xlib/window-information/XDeleteProperty.html
+ * @calls XSetInputFocus https://tronche.com/gui/x/xlib/input/XSetInputFocus.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls XUngrabKey https://tronche.com/gui/x/xlib/input/XUngrabKey.html
+ * @calls view to bring all clients into view
+ * @calls unmanage to stop managing all windows managed by the window manager
+ * @calls cleanupmon to tear down each monitor
+ * @calls drw_cur_free to free all mouse cursor options
+ * @calls drw_free to free the drawable
+ * @calls free to memory used by the the colour schemes
+ *
+ * Internal call stack:
+ *    main -> cleanup
+ */
 void
 cleanup(void)
 {
+	/* This sets up an argument that will select all tags */
 	Arg a = {.ui = ~0};
-	Layout foo = { "", NULL };
+	Layout foo = { "", NULL }; /* A dummy floating layout */
 	Monitor *m;
 	size_t i;
 
+	/* This calls view with the argument that selects and views all tags. This is what makes
+	 * dwm briefly show all client windows for a fraction of a second when exiting.
+	 *
+	 * The purpose of this may not be obvious, but it has to do with how dwm hides client
+	 * windows by moving them to a negative x position. In principle the X session could be
+	 * taken over by another window manager, which would cause some issues and/or confusion
+	 * given that some windows will be in an unreachable location.
+	 *
+	 * As such the view call here makes sure to pull all clients into view before dwm exits.
+	 */
 	view(&a);
+	/* This sets the selected monitor's layout to the dummy floating layout. The purpose of
+	 * this is presumably to negate a flood of arrange calls when calling unmanage for each
+	 * client. If that is the case then it would make more sense having this inside the for
+	 * loop so that this applies to all monitors when exiting, not just the selected one. */
 	selmon->lt[selmon->sellt] = &foo;
+	/* Loop through each monitor and unmanage all clients until the stack is exhausted */
 	for (m = mons; m; m = m->next)
 		while (m->stack)
 			unmanage(m->stack, 0);
+	/* This releases any keybindings (grabbed keys) */
 	XUngrabKey(dpy, AnyKey, AnyModifier, root);
+	/* Loop through and tear down all monitors */
 	while (mons)
 		cleanupmon(mons);
+	/* Loop through and free each cursor */
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
+	/* Loop through and free each colour scheme */
 	for (i = 0; i < LENGTH(colors); i++)
 		free(scheme[i]);
+	/* Free the memory used for the scheme struct as well */
 	free(scheme);
+	/* Destroy the supporting window, refer to the setup function for more details on this */
 	XDestroyWindow(dpy, wmcheckwin);
+	/* Free the drawable structure */
 	drw_free(drw);
+	/* This flushes the output buffer and then waits until all requests have been
+	 * received and processed by the X server. */
 	XSync(dpy, False);
+	/* This reverts the input focus back to the root window */
 	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+	/* This deletes the _NET_ACTIVE_WINDOW property of the root window as the window manager
+	 * no longer manages any windows. */
 	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
 }
 
+/* This function deals with tearing down a monitor which involves:
+ *    - tidying monitor references
+ *    - destroying the bar window
+ *    - freeing the memory used by the given monitor struct
+ *
+ * @called_from cleanup to delete bar windows and free memory before exiting
+ * @called_from updategeom to delete bar windows and free memory in the event of less monitors
+ * @calls XUnmapWindow https://tronche.com/gui/x/xlib/window/XUnmapWindow.html
+ * @calls XDestroyWindow https://tronche.com/gui/x/xlib/window/XDestroyWindow.html
+ * @calls free to release memory used by the given monitor struct
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom -> cleanupmon
+ *    main -> cleanup -> cleanupmon
+ */
 void
 cleanupmon(Monitor *mon)
 {
 	Monitor *m;
 
+	/* The mons (monitors) variable holds the reference to the first monitor in a linked list.
+	 * If the monitor being removed is the first monitor in this linked list, then we detach
+	 * the monitor by setting the mons variable to be the next monitor in the list.
+	 *
+	 * In other words
+	 *    mon -> a -> b -> c -> NULL
+	 *    ^-- mons
+	 *
+	 * becomes
+	 *    mon -> a -> b -> c -> NULL
+	 *           ^-- mons
+	 */
 	if (mon == mons)
 		mons = mons->next;
+	/* Otherwise we loop through each monitor until we find the previous monitor (which has
+	 * the given monitor as the next monitor). We then detach the given monitor by having the
+	 * previous monitor skip over it.
+	 *
+	 * In other words
+	 *    a -> b -> mon -> c -> NULL
+	 *
+	 * becomes
+	 *    a -> b -> c -> NULL
+	 */
 	else {
 		for (m = mons; m && m->next != mon; m = m->next);
 		m->next = mon->next;
 	}
+	/* Call to unmap the window so that it is no longer shown */
 	XUnmapWindow(dpy, mon->barwin);
+	/* Call to destroy the window */
 	XDestroyWindow(dpy, mon->barwin);
+	/* Finally free up memory used by the monitor struct */
 	free(mon);
 }
 
@@ -581,6 +921,23 @@ configure(Client *c)
 	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
 }
 
+/* This handles ConfigureNotify events coming from the X server.
+ *
+ * This can happen for example if you run an xrandr command that enables a monitor or
+ * changes resolution. Only ConfigureNotify events for the root window are handled.
+ *
+ * @called_from run (the event handler)
+ * @calls updategeom to update the number of monitors, their sizes and positions
+ * @calls drw_resize to adjust the drawable space
+ * @calls updatebars to create new bar windows in case we have new monitors
+ * @calls resizeclient to restore fullscreen client windows
+ * @calls XMoveResizeWindow https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
+ * @calls focus to give back input focus to the last used window as it may have been lost
+ * @calls arrange to resize and reposition tiled clients as the monitor may have changed
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom
+ */
 void
 configurenotify(XEvent *e)
 {
@@ -589,21 +946,49 @@ configurenotify(XEvent *e)
 	XConfigureEvent *ev = &e->xconfigure;
 	int dirty;
 
-	/* TODO: updategeom handling sucks, needs to be simplified */
+	/* TODO: updategeom handling sucks, needs to be simplified (famous last words) */
 	if (ev->window == root) {
+		/* If the width and height of the event differs from the stored screen width and
+		 * height then we will want do the corrections in the if statement below regardless
+		 * of whether updategeom detects a change in the number of monitors. We could just
+		 * have a case of the resolution of the monitor changing. */
 		dirty = (sw != ev->width || sh != ev->height);
+		/* This updates the screen width and the sceen height global variables */
 		sw = ev->width;
 		sh = ev->height;
+		/* Have updategeom run a check to see if we have any new or less monitors and
+		 * enter regardless if the screen size has changed. */
 		if (updategeom() || dirty) {
+			/* This next line changes the screen drawable area. That it resizes the
+			 * drawable area to be the height of the bar is most likely a bug considering
+			 * that the drawable area is created with the dimensions of the screen in the
+			 * setup function:
+			 *
+			 *    drw = drw_create(dpy, screen, root, sw, sh);
+			 *
+			 * This does not seem to affect the operability of dwm, however, as all that
+			 * the window manager draws is the bar which does not exceeed the bar height.
+			 */
 			drw_resize(drw, sw, bh);
+			/* This call to updatebars is to create new bar windows in the event that the
+			 * call to updategeom resulted in new monitors to be created. */
 			updatebars();
+			/* Loop through each monitor to make correction */
 			for (m = mons; m; m = m->next) {
+				/* For every client on the monitor check to see if any of them was in
+				 * fullscreen and if so then resize them to restore fullscreen. */
 				for (c = m->clients; c; c = c->next)
 					if (c->isfullscreen)
 						resizeclient(c, m->mx, m->my, m->mw, m->mh);
+				/* This resizes and repositions the bar according to the new
+				 * position and size of the monitor. */
 				XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
 			}
+			/* Give focus back to the last viewed client in case input focus got lost
+			 * as part of the monitor updates. */
 			focus(NULL);
+			/* A final arrange call to resize and reposition tiled clients following the
+			 * monitor changes. */
 			arrange(NULL);
 		}
 	}
@@ -712,23 +1097,119 @@ destroynotify(XEvent *e)
 		unmanage(c, 1);
 }
 
+
+/* This removes a client from the monitor's client list.
+ *
+ * The client list is a linked list of client structures where one client refers to the next.
+ * This list is primarily used:
+ *    - for managing the order in which client windows are tiled and
+ *    - to keep track of the clients that are managed by the window manager on a specific monitor
+ *
+ * Refer to the writeup for the attach function for usage warnings.
+ *
+ * @called_from pop to reattach a client to become the new master client
+ * @called_from sendmon to attach the client to the new monitor
+ *
+ * Internal call stack:
+ *    run -> keypress -> zoom -> pop -> detach
+ *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> detach
+ *    run -> destroynotify / unmapnotify -> unmanage -> detach
+ */
 void
 detach(Client *c)
 {
 	Client **tc;
 
+	/* The use of double pointers (**tc) can make this piece of code challenging to read
+	 * for users new to C who may not be that well versed in pointers and references.
+	 *
+	 * The problem scenario:
+	 *    - we need to find the given client (c) in a linked list
+	 *    - c refers to the next client in the list (n)
+	 *    - then we to find the client prior (p) to client c
+	 *    - then we need to have p refer to n instead of c in order to skip c
+	 *
+	 * An example implementation may look something like this:
+	 *
+	 *    Client *tc, *p;
+	 *
+	 *    if (c == c->mon->clients)
+	 *       c->mon->clients = c->next;
+	 *    else {
+	 *       for (tc = c->mon->clients; tc && tc != c; p = tc && tc = tc->next);
+	 *       p->next = c->next;
+	 *    }
+	 *
+	 * By using double pointers the above is written with less lines of code as we are
+	 * playing around with pointer addresses directly.
+	 *
+	 * Let's try to break this down.
+	 *
+	 * The variable **tc is declared as a pointer to a pointer to variable of type Client.
+	 *
+	 * The Monitor struct holds a pointer *clients to a variable of type Client.
+	 *
+	 * The tc variable is set to point to the address of c->mon->clients, as in it is pointing
+	 * to the pointer in the Monitor struct.
+	 *    tc = &c->mon->clients
+	 *
+	 * If c->mon->clients point to NULL or c->mon->clients is the given client, then stop
+	 * the for loop.
+	 *    *tc && *tc != c
+	 *
+	 * If the first client was the given client, then tc will still be referring to the
+	 * pointer of c->mon->clients. So the next line would then just change the pointer of
+	 * c->mon->clients to point to c->next.
+	 *    *tc = c->next;
+	 *
+	 * But in the event that the given client was not the first client in the list we change
+	 * tc to point to the address (&) of the pointer to the next client in the list.
+	 *    &(*tc)->next
+	 *
+	 * When we hit the condition again we check if that next pointer points to NULL or if it
+	 * points to the given client.
+	 *    *tc && *tc != c
+	 *
+	 * If it doesn't then we keep moving the iterator from the next pointer to the next pointer
+	 * rather than client to client until we find that the current next pointer refers to the
+	 * given client, at which point we exit the for loop.
+	 *
+	 * What happens next is that we make the pointer pointing to the given client point to the
+	 * next client in the list instead.
+	 *    *tc = c->next;
+	 */
 	for (tc = &c->mon->clients; *tc && *tc != c; tc = &(*tc)->next);
 	*tc = c->next;
 }
 
+/* This removes a client from the monitor's stacking order.
+ *
+ * The stacking order is a linked list of client structures where one client refers to the next.
+ * This list is primarily used:
+ *    - for managing the order in which client windows placed on top of each other
+ *
+ * Refer to the writeup for the attach function for usage warnings.
+ *
+ * @called_from sendmon to attach the client to the new monitor
+ * @called_from updategeom when the number of monitors is reduced
+ *
+ * Internal call stack:
+ *    ~ -> focus -> detachstack
+ *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> detachstack
+ *    run -> destroynotify / unmapnotify -> unmanage -> detachstack
+ *    run -> configurenotify -> updategeom -> detachstack
+ */
 void
 detachstack(Client *c)
 {
 	Client **tc, *t;
 
+	/* For a breakdown of what this does refer to the writeup in the detach function. */
 	for (tc = &c->mon->stack; *tc && *tc != c; tc = &(*tc)->snext);
 	*tc = c->snext;
 
+	/* Additionally if the client being removed happens to be the selected client, then find
+	 * the next visible client in the stack and set that to become the selected client. */
 	if (c == c->mon->sel) {
 		for (t = c->mon->stack; t && !ISVISIBLE(t); t = t->snext);
 		c->mon->sel = t;
@@ -1006,11 +1487,26 @@ getatomprop(Client *c, Atom prop)
 	return atom;
 }
 
+/* This is a wrapper function that gets the mouse pointer coordinates and stores those in the
+ * given x and y pointers.
+ *
+ * @called_from wintomon to find the monitor where the mouse pointer is
+ * @called_from movemouse as it needs the mouse coordinates for calculation reasons
+ * @calls XQueryPointer https://tronche.com/gui/x/xlib/window-information/XQueryPointer.html
+ *
+ * Internal call stack:
+ *    run -> keypress -> movemouse -> getrootptr
+ *    run -> configurenotify -> updategeom -> wintomon -> getrootptr
+ *    setup -> updategeom -> wintomon -> getrootptr
+ */
 int
 getrootptr(int *x, int *y)
 {
-	int di;
-	unsigned int dui;
+	/* These are all dummy variables that are only there because we need to have something
+	 * to pass to XQueryPointer. We are only interested in two values which are the x and y
+	 * coordinates of the mouse. The dummy values are simply ignored. */
+	int di; /* dummy int */
+	unsigned int dui; /* dummy unsigned int */
 	Window dummy;
 
 	return XQueryPointer(dpy, root, &dummy, &dummy, x, y, &di, &di, &dui);
@@ -1087,8 +1583,8 @@ grabbuttons(Client *c, int focused)
 	 * separate function but that would be less clean than simply adding it all in a block. */
 	{
 		unsigned int i, j;
-		/* The list of modifiers we are interested in. No additional modifier, the Lock mask,
-		 * the Num Lock mask, and Lock and Num Lock mask together. */
+		/* The list of modifiers we are interested in. No additional modifier, the Caps Lock
+		 * mask, the Num Lock mask, and Caps Lock and Num Lock mask together. */
 		unsigned int modifiers[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
 		/* Call to release any buttons we may have grabbed before. */
 		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
@@ -1114,7 +1610,7 @@ grabbuttons(Client *c, int focused)
 		 * To make this happen we need to let the X server know that we want to receive a
 		 * ButtonPress event if the user holds down the modifier key and clicks using the
 		 * left mouse button on the given window. More so we want this to work regardless
-		 * of whether Num Lock or general Lock is enabled.
+		 * of whether Num Lock or Caps Lock is enabled.
 		 *
 		 * The inner for loop runs through the modifiers that we listed in the modifiers
 		 * array earlier and combines each modifier with the modifier defined in the button
@@ -1141,7 +1637,8 @@ grabbuttons(Client *c, int focused)
 	}
 }
 
-/* TODO
+/* This tells the X server what key press scenarios we are interested in receiving notifications
+ * for.
  *
  * @called_from mappingnotify in the event of keyboard or keyboard layout change
  * @called_from setup to grab the keys initially
@@ -1185,7 +1682,7 @@ grabkeys(void)
 		 *
 		 * To make this happen we need to let the X server know that we want to receive a
 		 * KeyPress event if the user holds down the modifier key and clicks the b key.
-		 * More so we want this to work regardless of whether Num Lock or general Lock is
+		 * More so we want this to work regardless of whether Num Lock or Caps Lock is
 		 * enabled.
 		 *
 		 * The inner for loop runs through the modifiers that we listed in the modifiers
@@ -1196,8 +1693,8 @@ grabkeys(void)
 		 * following scenarios:
 		 *    - user holds down MODKEY and clicks b
 		 *    - user holds down MODKEY and clicks b while Num Lock is on
-		 *    - user holds down MODKEY and clicks b while Lock is on
-		 *    - user holds down MODKEY and clicks b while both Num Lock and Lock is on
+		 *    - user holds down MODKEY and clicks b while Caps Lock is on
+		 *    - user holds down MODKEY and clicks b while both Num Lock and Caps Lock is on
 		 *
 		 * It is worth noting that dwm only uses top level key bindings. For example
 		 * consider the default keybinding for killclient which is MOD+Shift+c:
@@ -1210,7 +1707,7 @@ grabkeys(void)
 		 *    { MODKEY,                       XK_C,      killclient,     {0} },
 		 *
 		 * but it will not work, however, due to how the logic in the keypress function
-		 * handles modifiers and keysyms.
+		 * handles modifiers, key codes and keysyms.
 		 */
 		for (i = 0; i < LENGTH(keys); i++)
 			if ((code = XKeysymToKeycode(dpy, keys[i].keysym)))
@@ -1224,18 +1721,49 @@ grabkeys(void)
 	}
 }
 
+/* User function to increment or decrement the number of client windows in the master area.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls updatebarpos to adjust the monitor's window area
+ * @calls XMoveResizeWindow https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
+ * @calls arrange to reposition and resize tiled clients
+ *
+ * Internal call stack:
+ *    run -> keypress -> incnmaster
+ */
 void
 incnmaster(const Arg *arg)
 {
+	/* This adjusts the number of master (nmaster) clients with the given argument. The
+	 * MAX(..., 0) is just a safeguard to prevent the nmaster value from becoming negative. */
 	selmon->nmaster = MAX(selmon->nmaster + arg->i, 0);
+	/* A full arrange to resize and reposition clients accordingly. In principle this could have
+	 * been an arrangemon call as we do not need to bring new clients into view, apply a restack
+	 * or to update the bar. */
 	arrange(selmon);
 }
 
 #ifdef XINERAMA
+/* Xinerama can give multiple geometries when querying for screens and we only want to consider
+ * unique geometries as separate monitors. This helper function is used by the updategeom function
+ * to luke out duplicate geometries by checking if the x and y positions as well as the width and
+ * height are identical to previous screens processed.
+ *
+ * @called_by updategeom to de-duplicate geometries returned by XineramaQueryScreens
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom -> isuniquegeom
+ *    setup -> updategeom -> isuniquegeom
+ */
 static int
 isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
 {
+	/* n in this case refers to how many rows worth of data the unique variable has. The while
+	 * loop ensures that we go through and compare each of the rows in our unique array with
+	 * the data in the given xinerama info. */
 	while (n--)
+		/* If the given xinerama info matches any of the existing rows in our unique array
+		 * then we return 0, the xinerama info is not unique. */
 		if (unique[n].x_org == info->x_org && unique[n].y_org == info->y_org
 		&& unique[n].width == info->width && unique[n].height == info->height)
 			return 0;
@@ -1243,20 +1771,88 @@ isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
 }
 #endif /* XINERAMA */
 
+/* This handles KeyPress events coming from the X server.
+ *
+ * @called_from run (the event handler)
+ * @calls XKeycodeToKeysym https://tronche.com/gui/x/xlib/utilities/keyboard/XKeycodeToKeysym.html
+ * @calls functions as defined in the keys array
+ * @see grabkeys for how the window manager subscribes to key presses
+ *
+ * Internal call stack:
+ *    run -> keypress
+ */
 void
 keypress(XEvent *e)
 {
 	unsigned int i;
-	KeySym keysym;
+	KeySym keysym, sym2;
 	XKeyEvent *ev;
 
 	ev = &e->xkey;
+
+	/* The XKeycodeToKeysym function uses internal Xlib tables and returns the keysym defined
+	 * for the given key code. The last argument of 0 is for the index of the key code vector
+	 * which means that we are only interested in top level keysyms.
+	 *
+	 * As a demonstration let's run the xev (event tester) tool and press the "d" key on the
+	 * keyboard. The output of xev should say something along the lines of:
+	 *
+	 *    KeyPress event, serial 35, synthetic NO, window 0x8400001,
+	 *    root 0x6be, subw 0x0, time 29383033, (56,550), root:(5618,835),
+	 *    state 0x0, keycode 40 (keysym 0x64, d), same_screen YES,
+	 *    XLookupString gives 1 bytes: (64) "d"
+	 *    XmbLookupString gives 1 bytes: (64) "d"
+	 *    XFilterEvent returns: False
+	 *
+	 * The XKeyEvent key code (ev->keycode) in this scenario would have the value of 40 as
+	 * shown shown in the output above. The keysym returned by the XKeycodeToKeysym function
+	 * would have the decimal value of 100 (hexadecimal 0x64) which is XK_d because we
+	 * specifically asked for the top level symbolic key. If we had passed 1 to get the second
+	 * level keys then the keysym returned would be decimal 68 (hexadecimal 0x44) which is XK_D.
+	 *
+	 * For simplicity dwm only supports keybindings using top level keybindings. As such
+	 * keybindings involving the shift key will be including the ShiftMask in the modifier key
+	 * rather than using second level keysyms for the key. E.g.
+	 *
+	 *    { MODKEY|ShiftMask,             XK_c,      killclient,     {0} },
+	 *
+	 * Removing the ShiftMask and adding XK_C as the key will not work due to how the ShiftMask
+	 * is taken into account when comparing the modifier and the event state.
+	 */
 	keysym = XKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0);
+	/* Loop through each keybinding */
 	for (i = 0; i < LENGTH(keys); i++)
+		/* Let's break down the matching process here with an example.
+		 *
+		 *      modifier                      key        function        argument
+		 *    { MODKEY,                       XK_i,      incnmaster,     {.i = +1 } },
+		 *
+		 * This checks that the keysym, e.g. XK_i, matches:
+		 *    keysym == keys[i].keysym
+		 *
+		 * This checks that the modifier matches:
+		 *    && CLEANMASK(keys[i].mod) == CLEANMASK(ev->state)
+		 *
+		 * Keybindings that do not have a function are simply ignored:
+		 *    && keys[i].func
+		 *
+		 * It is worth noting that the CLEANMASK macro removes Num Lock and Caps Lock mask
+		 * from the modifier as well as the event state. This has to do with that we want
+		 * these keybindings to work regardless of whether Num Lock and/or Caps Lock is
+		 * enabled or not. See the grabkeys function for how we subscribe to all of the key
+		 * combinations to cover this.
+		 */
 		if (keysym == keys[i].keysym
 		&& CLEANMASK(keys[i].mod) == CLEANMASK(ev->state)
 		&& keys[i].func)
+			/* This calls the function associated with the keybinding with the given
+			 * argument, e.g. calling incnmaster with the +1 argument. */
 			keys[i].func(&(keys[i].arg));
+			/* Note that there is no break; following this, which means that we will
+			 * continue searching through the key bindings for more matches. As such
+			 * it is possible to have more than one thing happen when a key combination
+			 * is pressed by having the same keybinding multiple times referring to
+			 * different functions. */
 }
 
 /* User function to close the selected client,
@@ -2350,20 +2946,75 @@ seturgent(Client *c, int urg)
 	XFree(wmh);
 }
 
+/* This is a recursive function that moves client windows into or out of view depending on whether
+ * the tag(s) they are shown on are viewed or not.
+ *
+ * Client windows are shown top down when the are moved into view, and are hidden bottom up when
+ * moved out of view.
+ *
+ * As an example let's say that we have a floating layout with a series of windows that are placed
+ * on top of each other. The order of the clients is determined by the monitor stack where the
+ * window that most recently had focus is at the top of the stack and the least recently used
+ * window will be at the bottom of the stack.
+ *
+ * When moving client windows into view we start to move clients from the top of the stack, then we
+ * call showhide again to move the next client in the stack.
+ *
+ * If this was the other way around then the window at the far bottom of the stack would be moved
+ * into view first, then the next after that, and so on until the last window that is shown on top
+ * of all the other windows is moved into view. This would give a very noticeable effect as the X
+ * server would have to draw each window as they are moved in and overlap.
+ *
+ * When windows are shown top down then the window at the top of the stack is moved into view first
+ * and the X server will not have to draw anything for any of the subsequent windows whose view is
+ * obscured by the topmost window.
+ *
+ * The same logic applies when moving windows out of view. If we were to hide windows top down then
+ * the topmost window would be moved out of view first, revealing the windows beneath it. The next
+ * window would reveal more windows and so on and the X server would have to draw each window being
+ * revealed. By hiding windows bottom up we avoid that as the topmost window obscures the view of
+ * the windows below it until that too is moved away.
+ *
+ * Most window managers use the IconicState and NormalState window states for the purpose of moving
+ * windows out of and into view. The iconic state means that the window is not shown on the screen
+ * but is shown as an icon in the bar (i.e. it is minimised).
+ *
+ * In dwm the windows are merely moved out of view to a negative X position (which is determined by
+ * the width of the client). In practice this means that the window is placed on the immediate left
+ * of the leftmost monitor, just out of view.
+ *
+ * @called_from arrange to bring clients into and out of view depending on what tags are shown
+ * @called_from showhide in a recursive manner for each client in the client stack
+ * @calls XMoveWindow https://tronche.com/gui/x/xlib/window/XMoveWindow.html
+ * @calls resize for all visible floating clients
+ * @calls showhide in a recursive manner for each client in the client stack
+ *
+ * Internal call stack:
+ *    ~ -> arrange -> showhide -> showhide
+ *                       ^___________/
+ */
 void
 showhide(Client *c)
 {
 	if (!c)
 		return;
 	if (ISVISIBLE(c)) {
-		/* show clients top down */
+		/* Show clients top down. */
 		XMoveWindow(dpy, c->win, c->x, c->y);
+		/* This applies a resize call if the window is floating or the floating layout is
+		 * used, as long as the window is not also in fullscreen.
+		 *
+		 * The only practical need for this resize call would be in the event that the size
+		 * hints of a window has been updated while it has been out of view.
+		 */
 		if ((!c->mon->lt[c->mon->sellt]->arrange || c->isfloating) && !c->isfullscreen)
 			resize(c, c->x, c->y, c->w, c->h, 0);
+
 		showhide(c->snext);
 	} else {
-		/* hide clients bottom up */
+		/* Hide clients bottom up */
 		showhide(c->snext);
+		/* Move the window out of sight. */
 		XMoveWindow(dpy, c->win, WIDTH(c) * -2, c->y);
 	}
 }
@@ -2406,21 +3057,55 @@ spawn(const Arg *arg)
 	}
 }
 
+/* The tag function moves the selected client to a given tag.
+ *
+ * This is referenced in the TAGKEYS macro which sets up keybindings for each individual tag.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @calls focus to give input focus to the next client in the stack
+ * @calls arrange as the client may have been been moved out of view
+ * @see TAGMASK macro
+ *
+ * Internal call stack:
+ *    run -> keypress -> tag
+ *    run -> buttonpress -> tag
+ */
 void
 tag(const Arg *arg)
 {
+	/* Don't proceed if there are no selected clients or the given argument is not for any
+	 * valid tag. */
 	if (selmon->sel && arg->ui & TAGMASK) {
+		/* This sets the new tagmask for the selected client. */
 		selmon->sel->tags = arg->ui & TAGMASK;
+		/* Give input focus to the next client in the stack as the client may have been
+		 * moved to a tag that is not viewed. */
 		focus(NULL);
+		/* A full arrange to resize and reposition the remaining clients as well as to
+		 * update the bar. */
 		arrange(selmon);
 	}
 }
 
+/* User function to move a the selected client to a monitor in a given direction.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls dirtomon to work out which monitor the direction refers to
+ * @calls sendmon to send the client to the monitor returned by dirtomon
+ *
+ * Internal call stack:
+ *    run -> keypress -> tagmon
+ */
 void
 tagmon(const Arg *arg)
 {
+	/* Bail if there are no selected client or if we have a single monitor */
 	if (!selmon->sel || !mons->next)
 		return;
+	/* The call to dirtomon works out which monitor is next or previous in line, while the
+	 * sendtomon function handles the actual transfer of ownership of the client between
+	 * monitors. */
 	sendmon(selmon->sel, dirtomon(arg->i));
 }
 
@@ -2520,29 +3205,129 @@ togglefloating(const Arg *arg)
 	arrange(selmon);
 }
 
+/* The toggletag function adds or removes tags in which a client window is to be shown on.
+ *
+ * This is referenced in the TAGKEYS macro which sets up keybindings for each individual tag.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @calls focus to give input focus to the next in the stack if the client is no longer shown
+ * @calls arrange as the client window may have been toggled away from the current monitor
+ * @see TAGMASK macro
+ *
+ * Internal call stack:
+ *    run -> keypress -> toggletag
+ *    run -> buttonpress -> toggletag
+ */
 void
 toggletag(const Arg *arg)
 {
 	unsigned int newtags;
 
+	/* Bail if there are no visible clients */
 	if (!selmon->sel)
 		return;
+	/* This sets the tag mask for the client.
+	 *
+	 * Let's say that the selected client is shown on the three tags 1, 5 and 6.
+	 * The current tags bitmask of said client would then be:
+	 *    000110001
+	 *       ^^   ^
+	 *    987654321
+	 *
+	 * Now let's say that the user hits the keybinding to toggle tag 5 for the client.
+	 *
+	 * The TAGKEYS macro passes an bit shifted unsigned int as the argument.
+	 *
+	 *    { MODKEY|ControlMask|ShiftMask, KEY,      toggletag,      {.ui = 1 << TAG} },
+	 *
+	 * In the keys array where the macro is used we can tell that for tag 5 the value of
+	 * 1 is shifted leftwards 4 times.
+	 *
+	 *    	TAGKEYS(                        XK_5,                      4)
+	 *
+	 * 1 << 4 becomes 000010000 in binary.
+	 *
+	 * The ^ is a binary exclusive or (XOR) operator which copies the bit if it is set in one
+	 * operand but not both.
+	 *
+	 * So the operation becomes:
+	 *      000110001
+	 *    ^ 000010000
+	 *      ---------
+	 *    = 000100001
+	 *
+	 * Meaning that the tags mask for the client now only holds tag 1 and 6.
+	 *
+	 * The arg->ui & TAGMASK is a safeguard that restricts the argument value to only hold as
+	 * many bits as there are tags.
+	 *
+	 * As an example let's say that the user were to change the tags array to only hold four
+	 * tags:
+	 *    static const char *tags[] = { "1", "2", "3", "4" };
+	 *
+	 * but leave the TAGKEYS macros binding keys for up to tag 9. This would make it possible
+	 * to tag a client to make it visible on tag 9 which does not exist, then untoggle the
+	 * client from the current view.
+	 *
+	 * In this scenario the newtags variable would still have a value as the ninth bit is set
+	 * to 1, which means that we would enter the if (newtags) { statement and set the client's
+	 * tags to the new bitmask. The problem with this is that the client window would now be
+	 * out of view and it would not be possible to bring that client window into view again.
+	 *
+	 * By capping the input argument to only allow bits for as many tags there are avoids
+	 * problems like this.
+	 *
+	 * The TAGMASK macro is defined as:
+	 *    #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
+	 */
 	newtags = selmon->sel->tags ^ (arg->ui & TAGMASK);
+	/* If the client is shown on at least one tag then allow the new tagset to be set. */
 	if (newtags) {
+		/* This sets the new tag mask for the selected client */
 		selmon->sel->tags = newtags;
+		/* It is possible that the client window disappeared from the current view in which
+		 * case we should give focus to the next client in line. We also apply a full arrange
+		 * in order to resize and reposition clients to fill the gap the client left behind.
+		 *
+		 * In the event that the client did not leave the current view the focus call will
+		 * not make any difference, but the full arrange will make a call to restack which
+		 * in turn calls drawbar so that you can see the tag indicators change. */
 		focus(NULL);
 		arrange(selmon);
 	}
 }
 
+/* The toggleview function brings tags into or out of view.
+ *
+ * This is referenced in the TAGKEYS macro which sets up keybindings for each individual tag.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @calls focus as the selected client may have been on a tag that was toggled away
+ * @calls arrange as the client windows shown may have changed
+ * @see TAGMASK macro
+ *
+ * Internal call stack:
+ *    run -> keypress -> toggleview
+ *    run -> buttonpress -> toggleview
+ */
 void
 toggleview(const Arg *arg)
 {
+	/* This creates a new tagmask based on the selected monitor's selected tagset toggling
+	 * the tagmask given as an argument. Refer to the writeup in the toggletag function should
+	 * you need more information on how this works. */
 	unsigned int newtagset = selmon->tagset[selmon->seltags] ^ (arg->ui & TAGMASK);
-
+	/* This prevents the scenario of toggling away the last viewed tag. I.e. there must be at
+	 * least one tag viewed. */
 	if (newtagset) {
+		/* This sets the new tag set for the selected monitor */
 		selmon->tagset[selmon->seltags] = newtagset;
+		/* The client that had focus may have been on a tag that was toggled away, so give
+		 * input focus to the next client in the stack. */
 		focus(NULL);
+		/* A full arrange as the constellation of client windows viewed may have changed. */
 		arrange(selmon);
 	}
 }
@@ -2954,19 +3739,77 @@ updatesizehints(Client *c)
 	c->hintsvalid = 1;
 }
 
+/* This updates the status text by reading the WM_NAME property of the root window.
+ *
+ * You can test this by running xsetroot like this:
+ *    $ xsetroot -name "status text"
+ *
+ * @called_from setup to initialise stext and trigger the initial drawing of the bar
+ * @called_from propertynotify whenever the WM_NAME property of the root window changes
+ * @calls gettextprop to read the WM_NAME text property of the root name
+ * @calls strcpy to set the default status text to "dwm-6.3"
+ * @calls drawbar to update the bar as the status text has changed
+ * @see https://dwm.suckless.org/status_monitor/
+ *
+ * Internal call stack:
+ *    run -> setup -> updatestatus
+ *    run -> propertynotify -> updatestatus
+ */
 void
 updatestatus(void)
 {
+	/* This retrieves the text property of WM_NAME from the root window and stores that in the
+	 * status text (stext) variable which is later used when drawing the bar. */
 	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
 		strcpy(stext, "dwm-"VERSION);
+	/* Update the bar as the status text has changed */
 	drawbar(selmon);
 }
 
+/* This updates the window title for the client.
+ *
+ * This is used for showing the window title in the bar and when trying to match client rules when
+ * the windows is first managed.
+ *
+ * @called_from manage to set the window title when the client is first managed
+ * @called_from propertynotify when WM_NAME or _NET_WM_NAME events are received
+ * @calls gettextprop to get the text property for the client window
+ * @calls strcpy to mark clients that have no name as broken
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> updatetitle
+ *    run -> propertynotify -> updatetitle
+ */
 void
 updatetitle(Client *c)
 {
+	/* Get the text property of a given client's window.
+	 *
+	 * The window title can be seen using xprop and clicking on the client window, e.g.
+	 *
+	 *    $ xprop | grep _NET_WM_NAME
+	 *    _NET_WM_NAME(UTF8_STRING) = "~"
+	 *
+	 * You can set a new title for a window using xdotool, but note that many applications
+	 * tend to manage the window title on their own and as such may overwrite what you set
+	 * using external tools like this.
+	 *
+	 *    xdotool selectwindow set_window --name "new title"
+	 */
 	if (!gettextprop(c->win, netatom[NetWMName], c->name, sizeof c->name))
+		/* Fall back to checking WM_NAME if the window does not have a _NET_WM_NAME
+		 * property. */
 		gettextprop(c->win, XA_WM_NAME, c->name, sizeof c->name);
+	/* Some windows do not have a window title set, in which case we fall back to using the
+	 * text "broken" to indicate this. It is better than displaying nothing in the window
+	 * title.
+	 *
+	 * The text is defined in the global variable named broken:
+	 *    static const char broken[] = "broken";
+	 *
+	 * The strcpy call copies all bytes (characters) from the broken array into the client
+	 * name variable.
+	 */
 	if (c->name[0] == '\0') /* hack to mark broken clients */
 		strcpy(c->name, broken);
 }
@@ -3002,15 +3845,46 @@ updatewmhints(Client *c)
 	}
 }
 
+/* The view function changes the view to a given bitmask.
+ *
+ * By default the view function is used to view individual tags, but as the argument is a bitmask
+ * it is perfectly possible to set up keybindings to view predefined sets of tags.
+ *
+ * This is referenced in the TAGKEYS macro which sets up keybindings for each individual tag.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @called_from cleanup to bring all client windows into view before exiting
+ * @calls focus to give input focus to the last viewed client on the viewed tag
+ * @calls arrange as the client windows shown may have changed
+ * @see TAGMASK macro
+ *
+ * Internal call stack:
+ *    run -> keypress -> view
+ *    run -> buttonpress -> view
+ *    main -> cleanup -> view
+ */
 void
 view(const Arg *arg)
 {
+	/* If the given bitmask is the same as what is currently shown then do nothing. This makes
+	 * it so that if you are on tag 7 and you hit MOD+7 then nothing happens. */
 	if ((arg->ui & TAGMASK) == selmon->tagset[selmon->seltags])
 		return;
+	/* This toggles between the previous and current tagset. */
 	selmon->seltags ^= 1; /* toggle sel tagset */
+	/* This sets the new tagset, unless the given unsigned int argument is 0. This has
+	 * specifically to do with the MOD+Tab keybinding that passes 0 as the bitmask to toggle
+	 * between the current and previous tagset.
+	 *
+	 *    { MODKEY,                       XK_Tab,    view,           {0} },
+	 */
 	if (arg->ui & TAGMASK)
 		selmon->tagset[selmon->seltags] = arg->ui & TAGMASK;
+	/* Focus on the first visible client in the stack as the view has changed */
 	focus(NULL);
+	/* Finally a full arrange call to hide clients that are not shown and to bring into view
+	 * the clients that are, to tile them and to update the bar. */
 	arrange(selmon);
 }
 
