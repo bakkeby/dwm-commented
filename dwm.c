@@ -3418,15 +3418,47 @@ toggleview(const Arg *arg)
 	}
 }
 
+/* This removes focus for a given client.
+ *
+ * The setfocus argument will revert the input focus to the root window. This is typically
+ * done when focus drifts from one monitor to another and is needed because there may not
+ * be any client windows on the new monitor that will receive input focus. If the input
+ * focus is not reverted to the root window in this scenario then it would be possible to
+ * continue typing in the previous window despite having moved focus to another monitor.
+ *
+ * @called_from buttonpress when focus changes between monitors
+ * @called_from enternotify when focus changes between monitors
+ * @called_from motionnotify when focus changes between monitors
+ * @called_from focusmon when focus changes between monitors
+ * @called_from sendmon when focus changes between monitors
+ * @called_from focus to unfocus the previously focused client
+ * @called_from manage to unfocus the previously focused client
+ * @calls grabbuttons to
+ *
+ * Internal call stack:
+ *    ~ -> focus -> unfocus
+ *    run -> buttonpress / enternotify -> unfocus
+ *    run -> maprequest -> manage -> unfocus
+ *    run -> keypress -> focusmon -> unfocus
+ *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> unfocus
+ */
 void
 unfocus(Client *c, int setfocus)
 {
 	if (!c)
 		return;
+	/* Grab buttons as we are now interested in receiving any any mouse button click events
+	 * for this window. */
 	grabbuttons(c, 0);
+	/* Revert the window border back to normal so that it doesn't appear like it is focused. */
 	XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
 	if (setfocus) {
+		/* If focus is drifting from one monitor to another then we want to make sure that
+		 * the previous window loses input focus by giving input focus back to the root
+		 * window. */
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+		/* We also drop the _NET_ACTIVE_WINDOW property from the root window to
+		 * indicate that the window manager has no window in focus. */
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
 	}
 }
@@ -3549,24 +3581,67 @@ unmapnotify(XEvent *e)
 	}
 }
 
+/* This is what creates the bar window for each monitor.
+ *
+ *
+ * @called_from setup to initialise the bars
+ * @called_from configurenotify in the event that the monitors or screen changes
+ * @calls XCreateWindow https://tronche.com/gui/x/xlib/window/XCreateWindow.html
+ * @calls XDefineCursor https://tronche.com/gui/x/xlib/window/XDefineCursor.html
+ * @calls XMapRaised https://tronche.com/gui/x/xlib/window/XMapRaised.html
+ * @calls XSetClassHint https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XSetClassHint.html
+ * @calls DefaultDepth https://linux.die.net/man/3/defaultdepth
+ * @calls DefaultVisual https://linux.die.net/man/3/defaultvisual
+ * @see https://tronche.com/gui/x/xlib/display/display-macros.html
+ * @see https://tronche.com/gui/x/xlib/window/attributes/
+ *
+ * Internal call stack:
+ *    main -> setup -> updatebars
+ *    run -> configurenotify -> updatebars
+ */
 void
 updatebars(void)
 {
 	Monitor *m;
+	/* The window attributes for the bar. */
 	XSetWindowAttributes wa = {
+		/* We set override-redirect to true so that we won't ever end up in the situation of
+		 * the bar being managed as a client in dwm. */
 		.override_redirect = True,
+		/* This makes it so that the background pixmap of the window's parent is used. */
 		.background_pixmap = ParentRelative,
+		/* This tells the X server that we are interested in receiving ButtonPress and Expose
+		 * events in relation to this window. */
 		.event_mask = ButtonPressMask|ExposureMask
 	};
+	/* The class hint for the bar window. This is set later with the XSetClassHint call. */
 	XClassHint ch = {"dwm", "dwm"};
+	/* Here we loop through each monitor */
 	for (m = mons; m; m = m->next) {
+		/* and if the monitor already have a bar window then we skip to the next. */
 		if (m->barwin)
 			continue;
+		/* This creates the bar window with the width of the monitor and the defined bar
+		 * height. The window is initially created at the top but the position will
+		 * ultimately be determined by the updatebarpos function. */
 		m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
 				CopyFromParent, DefaultVisual(dpy, screen),
+				/* The below flags correspond to the attributes we set in the wa
+				 * structure; in other words the flags tells the XCreateWindow
+				 * function what fields we set values for in that structure. */
 				CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+		/* This defines that we use the normal cursor when we move the mouse pointer over
+		 * the bar. */
 		XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
+		/* This maps the bar window making it visible and also raised above other windows. */
 		XMapRaised(dpy, m->barwin);
+		/* This sets the class hint of the bar to "dwm", e.g.
+		 *
+		 *    $ xprop
+		 *    WM_CLASS(STRING) = "dwm", "dwm"
+		 *
+		 * This allows for compositors as an example to make exceptions for the bar.
+		 */
 		XSetClassHint(dpy, m->barwin, &ch);
 	}
 }
@@ -3781,47 +3856,100 @@ updatenumlockmask(void)
 	XFreeModifiermap(modmap);
 }
 
+/* This updates the size hints for a client window.
+ *
+ * Size hints are a way for an application to tell what kind of sizes are appropriate for the given
+ * window.
+ *
+ * Example restrictions that might apply for a window:
+ *    - it could have a minimum size
+ *    - it could have a maximum size
+ *    - it might require a fixed aspect ratio
+ *    - it might require incremental size changes
+ *
+ * The function sets a series of variables that are later used when calculating the appropriate
+ * size of a window when size hints are respected.
+ *
+ * @called_by applysizehints
+ * @calls XGetWMNormalHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetWMNormalHints.html
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> updatesizehints
+ *    ~ -> resize -> applysizehints -> updatesizehints
+ */
 void
 updatesizehints(Client *c)
 {
 	long msize;
 	XSizeHints size;
 
+	/* If we fail to read the normal window management hints then we set size.flags to PSize
+	 * so that it has a value and that we go through all of the remaining if statements below
+	 * to set the default values. */
 	if (!XGetWMNormalHints(dpy, c->win, &size, &msize))
 		/* size is uninitialized, ensure that size.flags aren't used */
 		size.flags = PSize;
+
+	/* The base size defines the desired size of the window. */
 	if (size.flags & PBaseSize) {
 		c->basew = size.base_width;
 		c->baseh = size.base_height;
+	/* If the hints do not contain any base size flag then we fall back to setting the minimum
+	 * size as the base size. */
 	} else if (size.flags & PMinSize) {
 		c->basew = size.min_width;
 		c->baseh = size.min_height;
+	/* If the hints do not contain any minimum size either then we just set the base height and
+	 * width to 0. */
 	} else
 		c->basew = c->baseh = 0;
+
+	/* This sets the resize increment hint, e.g. the window can only be resized horizontally
+	 * with an increment of 24 pixels. */
 	if (size.flags & PResizeInc) {
 		c->incw = size.width_inc;
 		c->inch = size.height_inc;
+	/* If there are no resize increment hints then set these to 0 (no restriction). */
 	} else
 		c->incw = c->inch = 0;
+
+	/* This sets the maximum size of the window. */
 	if (size.flags & PMaxSize) {
 		c->maxw = size.max_width;
 		c->maxh = size.max_height;
+	/* If there is no maximum size then we set these to 0 (no restriction). */
 	} else
 		c->maxw = c->maxh = 0;
+
+	/* This sets the minimum size of the window. */
 	if (size.flags & PMinSize) {
 		c->minw = size.min_width;
 		c->minh = size.min_height;
+	/* If there is no minimum size restriction then fall back to using the base size as the
+	 * minimum size. */
 	} else if (size.flags & PBaseSize) {
 		c->minw = size.base_width;
 		c->minh = size.base_height;
+	/* If there is no base size either then set the minimum size to 0 (no restriction). */
 	} else
 		c->minw = c->minh = 0;
+
+	/* This sets the aspect ratio restrictions for the window. */
 	if (size.flags & PAspect) {
 		c->mina = (float)size.min_aspect.y / size.min_aspect.x;
 		c->maxa = (float)size.max_aspect.x / size.max_aspect.y;
+	/* If there is no aspect ratio hint then we set this to 0 (no restriction). */
 	} else
 		c->maxa = c->mina = 0.0;
+
+	/* Here we determine if the client window is fixed in size. This is an edge case where the
+	 * size hints for the window say that the minimum size is the same as the maximum size,
+	 * which means that the window can't be resized. A window that can't be resized is kind of
+	 * unfortunate for a tiling window manager, hence windows that are marked as fixed are
+	 * always going to be floating. */
 	c->isfixed = (c->maxw && c->maxh && c->maxw == c->minw && c->maxh == c->minh);
+	/* You may think of hintsvalid as a flag that indicates whether size hints need to be
+	 * updated or not. Here we set that to 1 to indicate that size hints are now up to date. */
 	c->hintsvalid = 1;
 }
 
@@ -3900,34 +4028,93 @@ updatetitle(Client *c)
 		strcpy(c->name, broken);
 }
 
+/* This reads window properties to update the window type.
+ *
+ * In practice this just checks whether the window is in fullscreen and whether it is a dialog box
+ * in which case the window becomes floating.
+ *
+ * @called_from propertynotify when notified of changes to _NET_WM_WINDOW_TYPE
+ * @called_from manage to make dialog windows floating by default
+ * @calls getatomprop to get the value of _NET_WM_STATE and _NET_WM_WINDOW_TYPE
+ * @calls setfullscreen in the event that the window is in fullscreen state
+ *
+ * Internal call stack:
+ *    run -> propertynotify -> updatewindowtype
+ *    run -> maprequest -> manage -> updatewindowtype
+ */
 void
 updatewindowtype(Client *c)
 {
+	/* This reads the property value of _NET_WM_STATE (if present), e.g.
+	 *
+	 *    $ xprop | grep _NET_WM_STATE
+	 *    _NET_WM_STATE(ATOM) = _NET_WM_STATE_FULLSCREEN
+	 */
 	Atom state = getatomprop(c, netatom[NetWMState]);
+
+	/* This reads the property value of _NET_WM_WINDOW_TYPE_DIALOG, e.g.
+	 *
+	 *    $ xprop | grep _NET_WM_WINDOW_TYPE
+	 *    __NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DIALOG
+	 */
 	Atom wtype = getatomprop(c, netatom[NetWMWindowType]);
 
+	/* If the WM state property indicates that we are in fullscreen then we make a call to
+	 * setfullscreen to make the window fullscreen within dwm as well. */
 	if (state == netatom[NetWMFullscreen])
 		setfullscreen(c, 1);
+	/* If the window type suggests a dialog box then we make that window floating. */
 	if (wtype == netatom[NetWMWindowTypeDialog])
 		c->isfloating = 1;
 }
 
+/* This reads window management hints for a given client window.
+ *
+ * @called_by propertynotify when notified of changes to the WM_HINTS property
+ * @called_by manage to read window management hints for new clients
+ * @calls XGetWMHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetWMHints.html
+ * @calls XSetWMHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XSetWMHints.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/wm-hints.html
+ * @see seturgent which also manpulates these hints
+ *
+ * Internal call stack:
+ *    run -> propertynotify -> updatewmhints
+ *    run -> maprequest -> manage -> updatewmhints
+ */
 void
 updatewmhints(Client *c)
 {
 	XWMHints *wmh;
 
+	/* This call reads the window management hints for the client's window. */
 	if ((wmh = XGetWMHints(dpy, c->win))) {
+		/* If the hints could be read then check if the urgency hint is present. If it is and
+		 * the given client is the selected client on the monitor then clear that hint. */
 		if (c == selmon->sel && wmh->flags & XUrgencyHint) {
+			/* The below binary operation says keep all flags except XUrgencyHint. */
 			wmh->flags &= ~XUrgencyHint;
+			/* This updates / overwrites the window management hints for the window. */
 			XSetWMHints(dpy, c->win, wmh);
 		} else
+			/* Here we set c->isurgent depending on whether the urgency hint has been set
+			 * or not. */
 			c->isurgent = (wmh->flags & XUrgencyHint) ? 1 : 0;
+		/* The second flag that is checked is whether there is any input hint present. */
 		if (wmh->flags & InputHint)
+			/* If the input hint is present then wmh->input indicates whether or not the
+			 * application relies on the window manager to get keyboard input. If it does
+			 * not then that means that the window should not get input focus. A good
+			 * example of this is the xclock program which provides this hint as it is
+			 * just an X window showing a clock and it does not handle keyboard input. */
 			c->neverfocus = !wmh->input;
 		else
 			c->neverfocus = 0;
+		/* We need to free the XWMHints structure returned by XGetWMHints. */
 		XFree(wmh);
+
+		/* NB: there are other hint flags in the structure but most of these are related to
+		 * the window icon and the rest are simply unused by dwm. */
 	}
 }
 
@@ -4133,26 +4320,87 @@ zoom(const Arg *arg)
 	pop(c);
 }
 
+/* As per the header comment of this file we have that:
+ *
+ *    To understand everything else, start reading main().
+ *
+ * The reason for this is simply that main is the first function that is executed when dwm starts:
+ *    - it sets everything up and
+ *    - it makes dwm enter the event loop by calling the run function and
+ *    - it triggers cleanup of resources when the window manager is exiting
+ *
+ * @calls XOpenDisplay https://tronche.com/gui/x/xlib/display/opening.html
+ * @calls XCloseDisplay https://tronche.com/gui/x/xlib/display/XCloseDisplay.html
+ * @calls die in the event of unexpected arguments
+ * @calls setlocale to try and set the locale for locale-sensitive C library functions
+ * @calls XSupportsLocale to check if locale is supported in the event that setlocale fails
+ * @calls checkotherwm to verify that no other window manager is running
+ * @calls setup to initialise the screen and everything else needed for operational purposes
+ * @calls pledge https://man.openbsd.org/pledge.2
+ * @calls scan to look for existing X windows that can be managed
+ * @calls run to enter the event loop
+ * @calls cleanup to free up resources when the window manager is exiting
+ */
 int
 main(int argc, char *argv[])
 {
+	/* The window manager only supports a single command line option and that option is the -v
+	 * flag to output the version of dwm. This first if statement checks if there is an argument
+	 * and if that argument is -v then it prints the version of dwm and exits. The argument
+	 * count is 2 in this case because the first argument is the name of the executable. */
 	if (argc == 2 && !strcmp("-v", argv[1]))
 		die("dwm-"VERSION);
+	/* Bail outputting a usage string if there are any arguments other than -v. */
 	else if (argc != 1)
 		die("usage: dwm [-v]");
+	/* Some library functions may be locale sensitive and the below tries to set the locale for
+	 * such cases. The LC_CTYPE category determines how single-byte vs multi-byte characters are
+	 * handled when it comes to text, what classifies as alpha, digits, etc. and also how
+	 * such character classes behave. */
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		fputs("warning: no locale support\n", stderr);
+	/* The XOpenDisplay function returns a Display structure that serves as the connection to
+	 * the X server and that contains all the information about that X server. This is to be
+	 * used in every subsequent xlib call we make. */
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("dwm: cannot open display");
+	/* Before proceeding we need to sanity check that no other window manager is running because
+	 * the X server would not allow two running side by side. The reason for that has to do with
+	 * how events are propagated when windows appear and disappear. The checkotherwm call will
+	 * result in dwm exiting with an error if another window manager is detected. */
 	checkotherwm();
+	/* If we have come so far then we are good to start up. The setup call will initialise
+	 * everything else that is needed for operational purposes. This involves setting up
+	 * monitors, loading fonts, creating colours for the colour schemes, creating cursors,
+	 * creating the bars, setting window manager hints and most importantly telling the X server
+	 * what kind of events the window manager is listening for. */
 	setup();
 #ifdef __OpenBSD__
+	/* In BSD systems the pledge call lists a series of "promises" that the program swears to
+	 * live by. The pledge restricts what the program can do. In practice the below states
+	 * that the program needs to be able to do the following to operate:
+	 *    stdio - use a series of standard in/out functions
+	 *    rpath - use system calls that have read-only effects on the file system
+	 *    proc - allows for process relationship operations like fork, setsid, etc.
+	 *    exec - allows a process to call execve
+	 *
+	 * Refer to the pledge page for more details on these. If the program were to break these
+	 * promises by, for example, using one of the functions under wpath that can result in write
+	 * effects on the file system then the process will be killed.
+	 */
 	if (pledge("stdio rpath proc exec", NULL) == -1)
 		die("pledge");
 #endif /* __OpenBSD__ */
+	/* The scan function will search for existing X windows that can be managed by the window
+	 * manager and it will pass those windows on to the manage function. */
 	scan();
+	/* The call to run will make dwm enter the event loop and it will remain there until the
+	 * window manager is ready to exit. */
 	run();
+	/* When exiting dwm the event loop is stopped and the call to run returns. Now we proceed
+	 * with cleaning up and freeing all the resources we initialised in the setup function. */
 	cleanup();
+	/* Finally we close the connection to the X server before we end the process. */
 	XCloseDisplay(dpy);
 	return EXIT_SUCCESS;
 }
