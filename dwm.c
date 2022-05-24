@@ -321,10 +321,13 @@ static Monitor *mons, *selmon;
  * latter in the setup function. */
 static Window root, wmcheckwin;
 
-/* configuration, allows nested code to access above variables */
+/* Configuration, allows nested code to access above variables */
 #include "config.h"
 
-/* compile-time check if all tags fit into an unsigned int bit array. */
+/* Compile-time check if all tags fit into an unsigned int bit array. This causes a compilation
+ * error if the user has added more than 31 entries in the tags array. This NumTags struct does
+ * not actually cost anything because the compiler is free to discard it as it is not used by
+ * anything. */
 struct NumTags { char limitexceeded[LENGTH(tags) > 31 ? -1 : 1]; };
 
 /* function implementations */
@@ -468,7 +471,8 @@ arrangemon(Monitor *m)
  *      freezing with high CPU usage
  *    - when moving clients from one monitor to another the client needs to be detached from both
  *      the client list and the client stack before the monitor is changed
- *    - detaching a client does not remove its references to other clients
+ *    - detaching a client does not remove its references to other clients, this results in
+ *      dangling pointers
  *
  * @called_from manage when the window manager manages a new window
  * @called_from pop reattach a client to become the new master client
@@ -1216,17 +1220,38 @@ detachstack(Client *c)
 	}
 }
 
+/* This works out the next or previous monitor depending on whether the input direction is a
+ * positive or negative number.
+ *
+ * This is used when moving clients across monitors or changing focus between monitors using
+ * keybindings.
+ *
+ * @called_from tagmon to find the adjacent monitor to send a client to
+ * @called_from focusmon to find the adjacent monitor to receive focus
+ *
+ * Internal call stack:
+ *    run -> keypress -> tagmon / focusmon -> dirtomon
+ */
 Monitor *
 dirtomon(int dir)
 {
 	Monitor *m = NULL;
 
+	/* If we are looking for the next monitor ... */
 	if (dir > 0) {
+		/* ... then that makes things fairly easy, just pick the monitor coming after the
+		 * selected monitor, but if this is the last monitor then pick the first monitor. */
 		if (!(m = selmon->next))
 			m = mons;
+	/* Otherwise if we are looking for the previous monitor then we first need to check if the
+	 * current monitor is the first monitor ... */
 	} else if (selmon == mons)
+		/* ... if it is then we loop through until we find the last monitor (which is not
+		 * followed by another monitor). */
 		for (m = mons; m->next; m = m->next);
 	else
+		/* If it isn't then loop through all monitors until we find the one that comes before
+		 * the current monitor. */
 		for (m = mons; m->next != selmon; m = m->next);
 	return m;
 }
@@ -1471,17 +1496,41 @@ focusstack(const Arg *arg)
 	}
 }
 
+/* This reads a property value of a given atom for a client's window.
+ *
+ * In dwm this is used to read a client's window state as well as window type.
+ *
+ * @called_from updatewindowtype to retrieve the window state and window type
+ * @calls XGetWindowProperty https://tronche.com/gui/x/xlib/window-information/XGetWindowProperty.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ *
+ * Internal call stack:
+ *    run -> propertynotify -> updatewindowtype -> getatomprop
+ *    run -> maprequest -> manage -> updatewindowtype -> getatomprop
+ */
 Atom
 getatomprop(Client *c, Atom prop)
 {
+	/* Here we have three dummy variables that we need to pass to XGetWindowProperty but the
+	 * values that are written we simply ignore.
+	 *
+	 * The dummy variables are:
+	 *    di - dummy integer
+	 *    dl - dummy unsigned long
+	 *    da - dummy atom
+	 */
 	int di;
 	unsigned long dl;
-	unsigned char *p = NULL;
+	unsigned char *p = NULL; /* The prop_return variable for the of XGetWindowProperty call. */
 	Atom da, atom = None;
 
+	/* This reads the given window property. If the property could be read successfully then
+	 * we enter the if statement, otherwise we end up returning a default atom of None. */
 	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, XA_ATOM,
 		&da, &di, &dl, &dl, &p) == Success && p) {
+		/* Capture the value of the prop_return to our local atom which we will return. */
 		atom = *(Atom *)p;
+		/* Free the prop_return variable. */
 		XFree(p);
 	}
 	return atom;
@@ -1530,27 +1579,64 @@ getstate(Window w)
 	return result;
 }
 
+/* This reads a text property of a given window and copies the data to the designated string.
+ *
+ * In dwm this is used to read the root window name property to update the status text and to read
+ * a client's window title.
+ *
+ * The size argument restricts how many bytes are written to the designated text variable.
+ *
+ * @called_from updatestatus to update the status text when the root window name changes
+ * @called_from updatetitle to read the window title of a client window
+ * @calls XGetTextProperty https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetTextProperty.html
+ * @calls XmbTextPropertyToTextList https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XmbTextPropertyToTextList.html
+ * @calls XFreeStringList https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XFreeStringList.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @calls strncpy to copy the text property string to a given variable
+ * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/converting-string-lists.html
+ *
+ * Internal call stack:
+ *    run -> setup -> updatestatus -> gettextprop
+ *    run -> propertynotify -> updatestatus -> gettextprop
+ *    run -> propertynotify -> updatetitle -> gettextprop
+ *    run -> maprequest -> manage -> updatetitle -> gettextprop
+ */
 int
 gettextprop(Window w, Atom atom, char *text, unsigned int size)
 {
+	/* The double pointer here has to do with the interface of the XmbTextPropertyToTextList
+	 * function expecting that. */
 	char **list = NULL;
 	int n;
 	XTextProperty name;
 
+	/* Safeguards, bail if being passed bad values. */
 	if (!text || size == 0)
 		return 0;
+	/* Set text to be an empty string. */
 	text[0] = '\0';
+	/* If we could not read the text property, or the text property could be read but contained
+	 * no data, then we exit early indicating that data was not read by returning 0 (false). */
 	if (!XGetTextProperty(dpy, w, &name, atom) || !name.nitems)
 		return 0;
+
+	/* The property data can either be a text string or it can be a list of text strings. */
 	if (name.encoding == XA_STRING)
+		/* If it is a text string then just copy the data to the designated text variable. */
 		strncpy(text, (char *)name.value, size - 1);
 	else {
+		/* If it is a list of text strings then we need to retrieve it by calling
+		 * XmbTextPropertyToTextList and the returned list needs to be freed when we are
+		 * finished with it. */
 		if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success && n > 0 && *list) {
 			strncpy(text, *list, size - 1);
 			XFreeStringList(list);
 		}
 	}
+	/* This is to make sure that the end of the text marks the end of the string, in the event
+	 * that the property held more data than we could store. */
 	text[size - 1] = '\0';
+	/* Free the XTextProperty value returned by XGetTextProperty. */
 	XFree(name.value);
 	return 1;
 }
@@ -1785,7 +1871,7 @@ void
 keypress(XEvent *e)
 {
 	unsigned int i;
-	KeySym keysym, sym2;
+	KeySym keysym;
 	XKeyEvent *ev;
 
 	ev = &e->xkey;
