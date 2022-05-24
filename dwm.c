@@ -1546,7 +1546,7 @@ getatomprop(Client *c, Atom prop)
  * Internal call stack:
  *    run -> keypress -> movemouse -> getrootptr
  *    run -> configurenotify -> updategeom -> wintomon -> getrootptr
- *    setup -> updategeom -> wintomon -> getrootptr
+ *    main -> setup -> updategeom -> wintomon -> getrootptr
  */
 int
 getrootptr(int *x, int *y)
@@ -1839,7 +1839,7 @@ incnmaster(const Arg *arg)
  *
  * Internal call stack:
  *    run -> configurenotify -> updategeom -> isuniquegeom
- *    setup -> updategeom -> isuniquegeom
+ *    main -> setup -> updategeom -> isuniquegeom
  */
 static int
 isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
@@ -2406,7 +2406,8 @@ quit(const Arg *arg)
  *    run -> motionnotify -> recttomon
  *    run -> keypress -> movemouse / resizemouse -> recttomon
  *    run -> buttonpress / enternotify / expose -> wintomon -> recttomon
- *    ~ -> updategeom -> wintomon -> rectomon
+ *    run -> configurenotify -> updategeom -> wintomon -> rectomon
+ *    main -> setup -> updategeom -> wintomon -> rectomon
  */
 Monitor *
 recttomon(int x, int y, int w, int h)
@@ -2775,10 +2776,9 @@ setfocus(Client *c)
 		/* This sets the _NET_ACTIVE_WINDOW property for the root window to refer to the
 		 * window that is active (has input focus).
 		 *
-		 * This can be seen by running this command and clicking on the background
-		 * (wallpaper) which is the root window.
+		 * This can be seen by running this command:
 		 *
-		 * $ xprop | grep _NET_ACTIVE_WINDOW
+		 * $ xprop -root | grep _NET_ACTIVE_WINDOW
 		 * _NET_ACTIVE_WINDOW(WINDOW): window id # 0x5000002
 		 */
 		XChangeProperty(dpy, root, netatom[NetActiveWindow],
@@ -2891,6 +2891,47 @@ setmfact(const Arg *arg)
 	arrange(selmon);
 }
 
+/* The setup call will initialise everything that we need for operational purposes.
+ *
+ * This involves:
+ *    - setting up monitors
+ *    - loading fonts
+ *    - creating colours for the colour schemes
+ *    - creating cursors
+ *    - creating the bars
+ *    - setting window manager hints
+ *    - telling the X server what kind of events the window manager is interested in
+ *
+ * @called from main as part of initialisation process
+ * @calls XInternAtom https://tronche.com/gui/x/xlib/window-information/XInternAtom.html
+ * @calls XCreateSimpleWindow https://tronche.com/gui/x/xlib/window/XCreateWindow.html
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ * @calls XDeleteProperty https://tronche.com/gui/x/xlib/window-information/XDeleteProperty.html
+ * @calls XChangeWindowAttributes https://tronche.com/gui/x/xlib/window/XChangeWindowAttributes.html
+ * @calls XSelectInput https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
+ * @calls DefaultScreen https://linux.die.net/man/3/defaultscreen
+ * @calls DisplayWidth https://linux.die.net/man/3/displaywidth
+ * @calls DisplayHeight https://linux.die.net/man/3/displayheight
+ * @calls RootWindow https://linux.die.net/man/3/rootwindow
+ * @calls ecalloc to allocate space for the colour schemes
+ * @calls drw_create to create the drawable (see drw.c)
+ * @calls drw_fontset_create to create the font set (see drw.c)
+ * @calls drw_cur_create to create cursors (see drw.c)
+ * @calls drw_scm_create to create the colour schemes (see drw.c)
+ * @calls focus to set input focus on the root window
+ * @calls grabkeys to register for keypress notifications
+ * @calls updatebars to create the bar window for each monitor
+ * @calls updategeom to create the monitors based on Xinerama information
+ * @calls updatestatus to initialise the status text variable
+ * @calls sigchld to set up the signal handler for child processes
+ * @see https://tronche.com/gui/x/xlib/display/display-macros.html
+ * @see https://tronche.com/gui/x/xlib/introduction/overview.html
+ * @see https://specifications.freedesktop.org/wm-spec/1.3/ar01s03.html
+ * @see https://tronche.com/gui/x/xlib/events/processing-overview.html
+ *
+ * Internal call stack:
+ *    main -> setup
+ */
 void
 setup(void)
 {
@@ -2898,26 +2939,81 @@ setup(void)
 	XSetWindowAttributes wa;
 	Atom utf8string;
 
-	/* clean up any zombies immediately */
+	/* Clean up any zombies immediately. This sets up the signal handler for child processes. */
 	sigchld(0);
 
-	/* init screen */
+	/* Initialise the screen.
+	 *
+	 * The DefaultScreen macro returns the default scren number. The screen number is used
+	 * to retrieve the height and width of the screen as well as the root window.
+	 *
+	 * The screen number is also used to find the default depth and visual when creating the
+	 * bar window(s).
+	 */
 	screen = DefaultScreen(dpy);
 	sw = DisplayWidth(dpy, screen);
 	sh = DisplayHeight(dpy, screen);
+
+	/* The root window is the window at the top of the window hierarchy and it covers each of
+	 * the display screens. If you set a background wallpaper then those graphics are drawn on
+	 * the root window. The root window plays an important role in the window manager as we
+	 * refer to it when creating windows, when scanning for windows, when finding the mouse
+	 * coordinates, when grabbing key and button presses and more. A window manager also
+	 * communicates its capabilities and support to other windows by setting properties on the
+	 * root window. */
 	root = RootWindow(dpy, screen);
+
+	/* This sets up the drawable (drw) which is an internal structure defined in drw.h which
+	 * holds the root window, the connection to the X server, the screen number, the colour
+	 * schemes, fonts, the graphics context and the drawable pixel map. */
 	drw = drw_create(dpy, screen, root, sw, sh);
+
+	/* This goes through all the fonts in the fonts array defined in the configuration file and
+	 * loads them. If we were not able to load any fonts then we can't proceed as the bar
+	 * depends on having a font.*/
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
+
+	/* The left + right padding for text drawn on the bar is set to the height of the
+	 * (primary) font. This means that the left padding of text will be half of that. */
 	lrpad = drw->fonts->h;
+
+	/* The bar height set to be the (primary) font height + 2 pixels, one pixel below and one
+	 * pixel above the text. */
 	bh = drw->fonts->h + 2;
+
+	/* The call to updategeom creates the monitor(s) based on Xinerama information, or it
+	 * creates a single monitor that spans all screens in the event that Xinerama is not
+	 * enabled for the screen or dwm is compiled without Xinerama support. */
 	updategeom();
-	/* init atoms */
+
+	/* Initialise atoms. This looks up the atom ID numbers for later use. */
+	/* The utf8string is only used once when setting the WM_NAME property of the supporting
+	 * window. */
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
+
+	/* Looking up Window Management atoms:
+	 *    WMProtocols - used in sendevent
+	 *    WMDelete - used in killclient
+	 *    WMState - used in getstate and setclientstate
+	 *    WMTakeFocus - used in setfocus
+	 */
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
 	wmatom[WMDelete] = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	wmatom[WMState] = XInternAtom(dpy, "WM_STATE", False);
 	wmatom[WMTakeFocus] = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
+
+	/* Looking up net atoms:
+	 *    NetActiveWindow - used in cleanup, clientmessage, focus, setfocus and unfocus
+	 *    NetSupported - used in setup to indicate what window manager hints are available
+	 *    NetWMName - used in updatetitle, propertynotify and setup
+	 *    NetWMState - used in clientmessage, setfullscreen, updatewindowtype
+	 *    NetWMCheck - used in setup to indicate supporting window
+	 *    NetWMFullscreen - used in clientmessage, setfullscreen and updatewindowtype
+	 *    NetWMWindowType - used in propertynotify and updatewindowtype
+	 *    NetWMWindowTypeDialog - used in updatewindowtype
+	 *    NetClientList - used in manage, setup and updateclientlist
+	 */
 	netatom[NetActiveWindow] = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
 	netatom[NetSupported] = XInternAtom(dpy, "_NET_SUPPORTED", False);
 	netatom[NetWMName] = XInternAtom(dpy, "_NET_WM_NAME", False);
@@ -2927,37 +3023,133 @@ setup(void)
 	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
 	netatom[NetWMWindowTypeDialog] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
 	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
-	/* init cursors */
+
+	/* Initialise different cursors for when resizing and moving windows. */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
 	cursor[CurMove] = drw_cur_create(drw, XC_fleur);
-	/* init appearance */
+
+	/* Initialise colour schemes. Allocate memory to hold pointers to all colour schemes. */
 	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
+
+	/* Loop through all the entries in the colors array */
 	for (i = 0; i < LENGTH(colors); i++)
+		/* Then create the colour scheme for each entry. The last argument 3 represents the
+		 * number of colours in each colour scheme array (foreground, background and border
+		 * colours). */
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
-	/* init bars */
+
+	/* Initialise the bars. The call to updatebars creates the bar window for each monitor. */
 	updatebars();
+
+	/* The call to updatestatus is only to initialise the status text (stext) variable with
+	 * "dwm-6.3" and to update the bar. */
 	updatestatus();
-	/* supporting window for NetWMCheck */
+
+	/* Supporting window for NetWMCheck. In order to be taken seriously and to be considered as
+	 * a valid, complianet and proper window manager we need to have a dummy window representing
+	 * the window manager.
+	 *
+	 * As per https://specifications.freedesktop.org/wm-spec/1.3/ar01s03.html we have that:
+	 *    The Window Manager MUST set the _NET_SUPPORTING_WM_CHECK property on the root window
+	 *    to be the ID of a child window created by himself, to indicate that a compliant window
+	 *    manager is active. The child window MUST also have the _NET_SUPPORTING_WM_CHECK
+	 *    property set to the ID of the child window. The child window MUST also have the
+	 *    _NET_WM_NAME property set to the name of the Window Manager.
+	 *
+	 *    Rationale: The child window is used to distinguish an active Window Manager from a
+	 *    stale _NET_SUPPORTING_WM_CHECK property that happens to point to another window. If
+	 *    the _NET_SUPPORTING_WM_CHECK window on the client window is missing or not properly
+	 *    set, clients SHOULD assume that no conforming Window Manager is present.
+	 *
+	 * We can see this in practice by running the below commands:
+	 *
+	 *    $ xprop -root | grep _NET_SUPPORTING_WM_CHECK\(
+	 *    _NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x60002d
+	 *
+	 *    $ xprop -id 0x60002d
+	 *    _NET_WM_NAME(UTF8_STRING) = "dwm"
+	 *    _NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x60002d
+	 *
+	 * The next line creates our 1x1 pixel supporting window.
+	 */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
+
+	/* This sets the _NET_SUPPORTING_WM_CHECK property on the supporting window referring to
+	 * its own window ID. */
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
 		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
+
+	/* This sets the _NET_WM_NAME property on the supporting window with the name of the window
+	 * manager. */
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string, 8,
 		PropModeReplace, (unsigned char *) "dwm", 3);
+
+	/* This sets the _NET_SUPPORTING_WM_CHECK on the root window referring to the supporting
+	 * window's window ID. */
 	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
 		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
-	/* EWMH support per view */
+
+	/* EWMH support per view. */
+
+	/* This sets the _NET_SUPPORTED list which indicates what extended window manager hints
+	 * the window manager supports.
+	 *
+	 *    xprop -root | grep _NET_SUPPORTED
+	 *    _NET_SUPPORTED(ATOM) = _NET_SUPPORTED, _NET_WM_NAME, _NET_WM_STATE,
+	 *    _NET_SUPPORTING_WM_CHECK, _NET_WM_STATE_FULLSCREEN, _NET_ACTIVE_WINDOW,
+	 *    _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_DIALOG, _NET_CLIENT_LIST
+	 */
 	XChangeProperty(dpy, root, netatom[NetSupported], XA_ATOM, 32,
 		PropModeReplace, (unsigned char *) netatom, NetLast);
+
+	/* This deletes the _NET_CLIENT_LIST property that holds a reference to all windows that are
+	 * managed by the window manager. The reason why this is deleted is that we are initialising
+	 * the window manager and the property may exist on the root window from a previous window
+	 * manager. The data in this property would be misleading as dwm is not managing the
+	 * referenced windows at this point in time. */
 	XDeleteProperty(dpy, root, netatom[NetClientList]);
-	/* select events */
+
+	/* This sets the default cursor to be the left pointer. */
 	wa.cursor = cursor[CurNormal]->cursor;
+
+	/* This sets the event mask which indicates to the X server what events this window manager
+	 * is interested in receiving notifications for.
+	 *
+	 *    SubstructureRedirectMask - to receive ConfigureRequest and MapRequest events
+	 *    SubstructureNotifyMask   - to receive ConfigureNotify, DestroyNotify, MapNotify and
+	 *                               UnmapNotify events (indicating a change for child windows)
+	 *    ButtonPressMask          - to receive ButtonPress events
+	 *    PointerMotionMask        - to receive MotionNotify events
+	 *    EnterWindowMask          - to receive EnterNotify events
+	 *    LeaveWindowMask          - to receive LeaveNotify events
+	 *    StructureNotifyMask      - to receive ConfigureNotify, DestroyNotify, MapNotify and
+	 *                               UnmapNotify events (indicating a change for a window)
+	 *    PropertyChangeMask       - to receive PropertyNotify events
+	 *
+	 * The above event masks do open for other other event types not listed above to come
+	 * through. These will be ignored by the event handler.
+	 *
+	 * See https://tronche.com/gui/x/xlib/events/processing-overview.html for a list of event
+	 * types and what event masks they correspond to.
+	 */
 	wa.event_mask = SubstructureRedirectMask|SubstructureNotifyMask
 		|ButtonPressMask|PointerMotionMask|EnterWindowMask
 		|LeaveWindowMask|StructureNotifyMask|PropertyChangeMask;
+
+	/* This sets the cursor and the event mask specified above for the root window. */
 	XChangeWindowAttributes(dpy, root, CWEventMask|CWCursor, &wa);
+
+	/* This call requests that the X server report events associated with the event mask
+	 * specified above. */
 	XSelectInput(dpy, root, wa.event_mask);
+
+	/* This goes through all the keybindings to tell the X server what key press combinations
+	 * the window manager wants to receive KeyPress events for. */
 	grabkeys();
+
+	/* Given that we are only starting up and have not yet called scan to find any client
+	 * windows the focus call below is to revert the input focus back to the root window. */
 	focus(NULL);
 }
 
@@ -3127,16 +3319,76 @@ sigchld(int unused)
 	while (0 < waitpid(-1, NULL, WNOHANG));
 }
 
+/* This starts a new program by executing a given execvp command.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls fork https://linux.die.net/man/2/fork
+ * @calls close https://linux.die.net/man/2/close
+ * @calls ConnectionNumber https://linux.die.net/man/3/connectionnumber
+ * @calls setsid https://linux.die.net/man/2/setsid
+ * @calls execvp https://linux.die.net/man/3/execvp
+ * @calls perror https://linux.die.net/man/3/perror
+ * @calls exit https://linux.die.net/man/3/exit
+ * @see https://man7.org/linux/man-pages/man2/fork.2.html
+ * @see https://tronche.com/gui/x/xlib/display/display-macros.html
+ *
+ * Internal call stack:
+ *    run -> keypress -> spawn
+ */
 void
 spawn(const Arg *arg)
 {
+	/* If we are executing the dmenu command then we manipulate the value that we pass to
+	 * dmenu_run via the -m argument by setting it to the selected monitor.
+	 *
+	 * For reference here is what the dmenu command looks like in config.def.h:
+	 *
+	 *    static char dmenumon[2] = "0"; // component of dmenucmd, manipulated in spawn()
+	 *    static const char *dmenucmd[] = { "dmenu_run", "-m", dmenumon, "-fn", ...
+	 *
+	 * The reason for passing this argument to dmenu is to control which monitor dmenu spawns
+	 * on. This is likely due to legacy reasons given that dmenu is capable of working out which
+	 * monitor currently has input focus on its own. It is perfectly safe to delete the two
+	 * lines below and remove the -m argument from the command.
+	 */
 	if (arg->v == dmenucmd)
 		dmenumon[0] = '0' + selmon->num;
+
+	/* This next call does some magic that may be hard to grasp. Let's demystify.
+	 *
+	 * This call to fork forks the process. What this actually means is that it creates a new
+	 * (duplicate) process of the current process; in other words we end up with two dwm
+	 * processes.
+	 *
+	 * For process 1 (this process) the fork() call returns the process ID of the new process.
+	 * As such we do not enter the if statement and we return from the spawn function and dwm
+	 * eventually goes back to the event loop after checking the remaining key bindings.
+	 *
+	 * For process 2 (the new process) the fork() call returns 0 and we enter the if statement.
+	 * This then calls execvp which replaces the current process image with a new process image,
+	 * as in it becomes the new process. If the call to execvp fails for whatever reason then
+	 * it will continue to print an error and call exit to stop the process.
+	 *
+	 * Processes spawned via dwm will have the dwm process as its parent process.
+	 */
 	if (fork() == 0) {
+		/* If we have a connection to the X server then close that before proceeding. */
 		if (dpy)
 			close(ConnectionNumber(dpy));
+
+		/* The call to setsid creates a new session and sets the process group ID. This is
+		 * needed because a child created via fork inherits its parent's session ID and we
+		 * need our own because this session ID will be preserved across the execvp call. */
 		setsid();
+
+		/* The execvp causes the program that is currently being run (dwm in this case) to
+		 * be replaced with a new program and with a newly initialised stack, heap and data
+		 * segments. If this is successful then this is the last thing this process does in
+		 * the dwm code. */
 		execvp(((char **)arg->v)[0], (char **)arg->v);
+		/* If the execvp fails for whatever reason, then we are still here executing dwm
+		 * code. So we print an error to say that we failed to execute the command and we
+		 * call exit to ensure that this process stops running. */
 		fprintf(stderr, "dwm: execvp %s", ((char **)arg->v)[0]);
 		perror(" failed");
 		exit(EXIT_SUCCESS);
@@ -3583,7 +3835,6 @@ unmapnotify(XEvent *e)
 
 /* This is what creates the bar window for each monitor.
  *
- *
  * @called_from setup to initialise the bars
  * @called_from configurenotify in the event that the monitors or screen changes
  * @calls XCreateWindow https://tronche.com/gui/x/xlib/window/XCreateWindow.html
@@ -3653,7 +3904,7 @@ updatebars(void)
  *
  * Internal call stack:
  *    run -> configurenotify -> updategeom -> updatebarpos
- *    setup -> updategeom -> updatebarpos
+ *    main -> setup -> updategeom -> updatebarpos
  */
 void
 updatebarpos(Monitor *m)
@@ -3689,9 +3940,9 @@ updatebarpos(Monitor *m)
  * in this property and the simplest solution is to just delete the list and generate a new one
  * based on all the remaining clients that are still managed.
  *
- * You can check this using the below command and clicking on the desktop background (wallpaper).
+ * You can check this using the follwoing command.
  *
- *    $ xprop | grep _NET_CLIENT_LIST
+ *    $ xprop -root | grep _NET_CLIENT_LIST\(
  *    _NET_CLIENT_LIST(WINDOW): window id # 0x4e00002, 0x7000002, 0x6e00001, 0x6200002
  *
  * @called_from unmanage to remove unmanaged windows from _NET_CLIENT_LIST
@@ -3722,81 +3973,167 @@ updateclientlist()
 				(unsigned char *) &(c->win), 1);
 }
 
+/* This sets up monitors if the window manager is compiled with the Xinerama library. If dwm is
+ * compiled without the Xinerama library, or in the event that Xinerama is not active for the
+ * screen, then the available screen space is set up as a single workspace that spans all monitors.
+ *
+ * @called_from setup to set up monitor(s) on startup
+ * @called_from configurenotify if monitor(s) or screen change during runtime
+ * @calls XineramaIsActive https://linux.die.net/man/3/xineramaisactive
+ * @calls XineramaQueryScreens https://linux.die.net/man/3/xineramaqueryscreens
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @calls ecalloc to allocate space to hold unique screen info
+ * @calls memcpy to copy screen info
+ * @calls isuniquegeom to check for duplicate screen info
+ * @calls createmon to set up new monitors
+ * @calls updatebarpos to set the bar position and window area accordingly
+ * @calls detachstack to relocate clients in the event of less monitors
+ * @calls attachstack to relocate clients in the event of less monitors
+ * @calls attach to relocate clients in the event of less monitors
+ * @calls cleanupmon in the event that we have less monitors
+ * @calls free to release resources after parsing Xinerama screens
+ * @calls wintomon to find the monitor the mouse cursor resides on
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom
+ *    main -> setup -> updategeom
+ */
 int
 updategeom(void)
 {
 	int dirty = 0;
 
 #ifdef XINERAMA
+	/* This checks if Xinerama is active on the screen (we would expect this to be true). */
 	if (XineramaIsActive(dpy)) {
 		int i, j, n, nn;
 		Client *c;
 		Monitor *m;
+		/* The XineramaQueryScreens function returns info about each individual output device
+		 * within the Xinerama Screen. The variable nn here refers to the number of entries
+		 * the info list. This list can in principle contain duplicate geometries so we are
+		 * going to de-duplicate it by checking for unique geometries. */
 		XineramaScreenInfo *info = XineramaQueryScreens(dpy, &nn);
 		XineramaScreenInfo *unique = NULL;
 
+		/* This loops through all monitors in order to find the current monitor count (n). */
 		for (n = 0, m = mons; m; m = m->next, n++);
-		/* only consider unique geometries as separate screens */
+		/* Only consider unique geometries as separate screens. Here we allocate space to
+		 * hold up to nn unique XineramaScreenInfo entries. */
 		unique = ecalloc(nn, sizeof(XineramaScreenInfo));
+		/* We then loop through each of the nn elements of the info array provided by
+		 * XineramaQueryScreens and verify that this geometry has not been seen before.
+		 * If it has not then we copy that element into the list of unique geometries,
+		 * otherwise if the screen info is not unique then it is skipped. */
 		for (i = 0, j = 0; i < nn; i++)
 			if (isuniquegeom(unique, j, &info[i]))
 				memcpy(&unique[j++], &info[i], sizeof(XineramaScreenInfo));
+		/* Data returned by XineramaQueryScreens must be freed. */
 		XFree(info);
 		nn = j;
 
-		/* new monitors if nn > n */
+		/* New monitors if nn > n. If this is the first time this function is run (via setup)
+		 * then the number of exiting monitors (n) will be 0, but otherwise we would only
+		 * process this for-loop if we have new monitors to add. */
 		for (i = n; i < nn; i++) {
+			/* This sets m to the last monitor. */
 			for (m = mons; m && m->next; m = m->next);
+			/* If we have a last monitor then just create a new monitor after that. */
 			if (m)
 				m->next = createmon();
+			/* Otherwise this is the first monitor being created, so we set mons which
+			 * refers to the first monitor in the (linked) list of monitors. */
 			else
 				mons = createmon();
 		}
+		/* Now we need to loop through each monitor and update the monitor coordinates as
+		 * well as the size of each monitor. */
 		for (i = 0, m = mons; i < nn && m; m = m->next, i++)
+			/* This says that we only enter the if statement if we are looping through
+			 * new monitors (i >= n), or if the position or size has changed. It is here
+			 * to avoid needlessly marking dirty = 1 when the geometries has not changed
+			 * for a monitor. */
 			if (i >= n
 			|| unique[i].x_org != m->mx || unique[i].y_org != m->my
 			|| unique[i].width != m->mw || unique[i].height != m->mh)
 			{
 				dirty = 1;
+				/* This sets the monitor number, or index if you wish. */
 				m->num = i;
+				/* This sets the monior position and size as well as the window area
+				 * to the position and dimensions provided by Xinerama. */
 				m->mx = m->wx = unique[i].x_org;
 				m->my = m->wy = unique[i].y_org;
 				m->mw = m->ww = unique[i].width;
 				m->mh = m->wh = unique[i].height;
+				/* Update the bar position and the window area accordingly. */
 				updatebarpos(m);
 			}
-		/* removed monitors if n > nn */
+		/* Removed monitors if n > nn. If this is the first time this function is run (via
+		 * setup) then we will not enter this for loop. In the event that a monitor has been
+		 * removed then we need to move all the clients on that monitor to one that is still
+		 * visible. For simplicity clients are moved to the first (often primary) monitor. */
 		for (i = nn; i < n; i++) {
+			/* This finds the last monitor (m). */
 			for (m = mons; m && m->next; m = m->next);
+			/* Then we repeat the below for all clients on monitor m, setting c to the
+			 * first client in the list. */
 			while ((c = m->clients)) {
 				dirty = 1;
+				/* This takes the current client out of the client list, setting the
+				 * next in line to become the new head of the list. This is also why
+				 * there is no separate detach(c) call here. */
 				m->clients = c->next;
+				/* Remove the client from the stacking order before changing the
+				 * monitor. */
 				detachstack(c);
+				/* Setting the client's monitor to be the first monitor before calling
+				 * attach and attachstack there. */
 				c->mon = mons;
 				attach(c);
 				attachstack(c);
 			}
+			/* If the monitor being removed was the selected monitor, then make the first
+			 * monitor the selected one. */
 			if (m == selmon)
 				selmon = mons;
+			/* Call cleanupmon to free up resources, remove the bar window, etc. */
 			cleanupmon(m);
 		}
+		/* Free the resources we used to create our unique XineramaScreenInfo array. */
 		free(unique);
 	} else
 #endif /* XINERAMA */
+	/* In the event that dwm is compiled without the Xinerama library, or XineramaIsActive
+	 * indicates that Xinerama is not active for the screen, then we fall back to setting up
+	 * a single workspace (monitor) that spans all screens. */
 	{ /* default monitor setup */
+		/* If a single monitor does not exist, then create it. */
 		if (!mons)
 			mons = createmon();
+		/* Enter the if statement if the screen width or height has changed. */
 		if (mons->mw != sw || mons->mh != sh) {
 			dirty = 1;
+			/* This sets the size of the monitor. The position is not set and will default
+			 * to 0x0. */
 			mons->mw = mons->ww = sw;
 			mons->mh = mons->wh = sh;
+			/* Update the bar position and the window area according to the new size. */
 			updatebarpos(mons);
 		}
 	}
+	/* If we have made any change in terms of monitors, position or sizes then the dirty flag
+	 * will have been set. In this case we revert the selected monitor back to the first
+	 * monitor, then we try to set the selected monitor based on the location of the mouse
+	 * pointer by calling wintomon. In practice the setting of selmon to mons prior to calling
+	 * wintomon is only on the off chance that we should fail to query for the mouse pointer,
+	 * in which case wintomon would eventually return selmon. */
 	if (dirty) {
 		selmon = mons;
 		selmon = wintomon(root);
 	}
+	/* Return the dirty flag to indicate whether this call to updategeom resulted in any change
+	 * to monitor setup. This return value is used in the configurenotify function. */
 	return dirty;
 }
 
@@ -4182,7 +4519,7 @@ view(const Arg *arg)
  *    run -> buttonpress / clientmessage / configurerequest / maprequest -> wintoclient
  *    run -> destroynotify / enternotify / propertynotify / unmapnotify -> wintoclient
  *    run -> configurenotify -> updategeom -> wintomon -> wintoclient
- *    setup -> updategeom -> wintomon -> wintoclient
+ *    main -> setup -> updategeom -> wintomon -> wintoclient
  */
 Client *
 wintoclient(Window w)
@@ -4215,7 +4552,7 @@ wintoclient(Window w)
  * Internal call stack:
  *    run -> buttonpress / enternotify / expose -> wintomon
  *    run -> configurenotify -> updategeom -> wintomon
- *    setup -> updategeom -> wintomon
+ *    main -> setup -> updategeom -> wintomon
  */
 Monitor *
 wintomon(Window w)
