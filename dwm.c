@@ -330,8 +330,78 @@ static Window root, wmcheckwin;
  * anything. */
 struct NumTags { char limitexceeded[LENGTH(tags) > 31 ? -1 : 1]; };
 
-/* Function implementations */
+/* Function implementations. Functions are ordered alphabetically and function names always
+ * start on a new line to make them easier to find. */
 
+/* This function applies client rules for a client window.
+ *
+ * Example rules from the default configuration:
+ *
+ *    static const Rule rules[] = {
+ *       // class      instance    title       tags mask     isfloating   monitor
+ *       { "Gimp",     NULL,       NULL,       0,            1,           -1 },
+ *       { "Firefox",  NULL,       NULL,       1 << 8,       0,           -1 },
+ *    };
+ *
+ * The first three fields are rule matching filters while the last three are rule options. What
+ * this means is that a client window must match all of the class, instance and title filters in
+ * order to get the tags mask, floating state and monitor options applied.
+ *
+ * If a rule filter is NULL then it does not apply (e.g. like instance and title filters above).
+ *
+ * Rule matching uses the strstr function to compare the rule filter to the corresponding class,
+ * instance and title values for the window. The strstr function is case sensitive and checks if
+ * a substring exists in another string.
+ *
+ * As an example if a rule has an instance filter of "st" then a client that has an instance name
+ * of "Manifesto Pro" will match that rule because the instance name contains "st". Adding more
+ * than one filter (e.g. class and instance) may help in these kind of situations.
+ *
+ * The fields, as well as the order of the fields, are determined by the Rule struct (given that
+ * the type of the rules array is Rule).
+ *
+ *    typedef struct {
+ *       const char *class;
+ *       const char *instance;
+ *       const char *title;
+ *       unsigned int tags;
+ *       int isfloating;
+ *       int monitor;
+ *    } Rule;
+ *
+ * It is worth noting that when some application windows are initially mapped they may have
+ * different title, class and instance hints compared to when you run xprop on them. It may be
+ * that these hints are changed by the application after dwm has checked the rules. An example
+ * of this are LibreOffice programs that come through with class and instance hints of "soffice"
+ * due to having a common launcher application named as such.
+ *
+ * One common misunderstanding when it comes to rules is that the tags mask is a binary mask
+ * rather than just a number like 8 to place a client on tag 8. The reason for this is simply due
+ * to convenience as all tags handling are binary masks, but also because a user may want to have
+ * a rule that places a given client on both tag 5 and tag 7.
+ *
+ * Also worth noting that in (ANSI) C99 you can use designated initialisers to initialise a
+ * structure. What this means is that you can initialise your rules like this:
+ *
+ *    static const Rule rules[] = {
+ *       { .class = "Gimp", .isfloating = 1, .monitor = -1 },
+ *       { .class = "Firefox", .tags = 1 << 8, .monitor = -1 },
+ *    };
+ *
+ * Any fields that are not initialised will default to 0. This can be useful when using many
+ * patches that add more rule filters or options.
+ *
+ * @called_from manage to apply client rules for new windows being managed
+ * @calls XGetClassHint https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetClassHint.html
+ * @calls strstr to look for substring matches in a window's class, instance and title strings
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/wm-class.html
+ * @see https://dwm.suckless.org/customisation/rules/
+ * @see https://dwm.suckless.org/customisation/tagmask/
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> applyrules
+ */
 void
 applyrules(Client *c)
 {
@@ -339,32 +409,65 @@ applyrules(Client *c)
 	unsigned int i;
 	const Rule *r;
 	Monitor *m;
+	/* Placeholder to store the client's class hints in */
 	XClassHint ch = { NULL, NULL };
 
-	/* rule matching */
+	/* Rule matching */
 	c->isfloating = 0;
 	c->tags = 0;
+	/* This reads the class hint for the client's window. As in this property of
+	 * the window:
+	 *
+	 *    $ xprop | grep WM_CLASS
+	 *    WM_CLASS(STRING) = "st", "St"
+	 *
+	 * The first value is the instance name and the second is the class. In the unlikely
+	 * scenario that a window does not have this property set then the class and instance will
+	 * default to "broken".
+	 */
 	XGetClassHint(dpy, c->win, &ch);
 	class    = ch.res_class ? ch.res_class : broken;
 	instance = ch.res_name  ? ch.res_name  : broken;
 
+	/* This loops through all Rule entries in the rules array. */
 	for (i = 0; i < LENGTH(rules); i++) {
+		/* The current rule (r) */
 		r = &rules[i];
+		/* Checking matching filters for class, instance and title. */
 		if ((!r->title || strstr(c->name, r->title))
 		&& (!r->class || strstr(class, r->class))
 		&& (!r->instance || strstr(instance, r->instance)))
 		{
+			/* This applies the rule options:
+			 *    - what monitor the client is to be shown on
+			 *    - tags mask
+			 *    - whether the client is floating or not
+			 */
 			c->isfloating = r->isfloating;
+			/* Note that this adds rather than sets tags. */
 			c->tags |= r->tags;
+			/* This loops through all monitors trying to find one that matches the monitor
+			 * rule value. If the rule value is -1 then we simply exhaust the list and m
+			 * will be NULL and thus not set. */
 			for (m = mons; m && m->num != r->monitor; m = m->next);
 			if (m)
 				c->mon = m;
+			/* Note the omission of a break; here. This means that despite having found a
+			 * matching client rule we still continue looking for others. In practice what
+			 * this means is that the last rule to apply is the one that will take
+			 * precedence, while the client's tags will be a union of the tags mask for
+			 * all matching rules. Situations where this applies is fairly rare. */
 		}
 	}
+
+	/* The class and instance names need to be freed (if returned by XGetClassHint). */
 	if (ch.res_class)
 		XFree(ch.res_class);
 	if (ch.res_name)
 		XFree(ch.res_name);
+
+	/* This guard checks whether the client is to be shown on a valid tag. If it is not
+	 * then we show the client on whatever tag(s) the client's monitor has active. */
 	c->tags = c->tags & TAGMASK ? c->tags & TAGMASK : c->mon->tagset[c->mon->seltags];
 }
 
