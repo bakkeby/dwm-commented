@@ -330,7 +330,8 @@ static Window root, wmcheckwin;
  * anything. */
 struct NumTags { char limitexceeded[LENGTH(tags) > 31 ? -1 : 1]; };
 
-/* function implementations */
+/* Function implementations */
+
 void
 applyrules(Client *c)
 {
@@ -449,10 +450,26 @@ arrange(Monitor *m)
 		arrangemon(m);
 }
 
+/* This sets / updates the layout symbol for the monitor and calls the layout arrange function
+ * (tile or monocle) to resize and reposition client windows.
+ *
+ * @called_from arrange to handle layout arrangements
+ * @calls monocle to resize and reposition client windows
+ * @calls tile to resize and reposition client windows
+ *
+ * Internal call stack:
+ *    ~ -> arrange -> arrangemon
+ */
 void
 arrangemon(Monitor *m)
 {
+	/* This copies the layout symbol of the selected layout to the monitor's layout string,
+	 * which is later used in drawbar when printing the layout symbol on the bar. */
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
+
+	/* If floating layout is used then the arrange function will be NULL, otherwise we call
+	 * that arrange function. This will be the tile function or the monocle function depending
+	 * on what layout is selected. */
 	if (m->lt[m->sellt]->arrange)
 		m->lt[m->sellt]->arrange(m);
 }
@@ -906,11 +923,28 @@ clientmessage(XEvent *e)
 	}
 }
 
+/* This propagates the border width, size and position back to the client window.
+ *
+ * @called_from configurerequest in relation to external requests to resize client windows
+ * @called_from manage to propagate the border width to the window
+ * @called_from resizeclient to propagate size changes to the window
+ * @calls XSendEvent https://tronche.com/gui/x/xlib/event-handling/XSendEvent.html
+ * @see https://tronche.com/gui/x/xlib/events/processing-overview.html
+ * @see https://tronche.com/gui/x/xlib/events/window-state-change/configure.html
+ * @see https://tronche.com/gui/x/xlib/window/attributes/override-redirect.html
+ *
+ * Internal call stack:
+ *    run -> configurerequest -> configure
+ *    run -> maprequest -> manage -> configure
+ *    ~ -> resize -> resizeclient -> configure
+ */
 void
 configure(Client *c)
 {
 	XConfigureEvent ce;
 
+	/* The type of this event is ConfigureNotify. The rest of the attributes are event data
+	 * that we want to propagate like the client's border width, the position and size. */
 	ce.type = ConfigureNotify;
 	ce.display = dpy;
 	ce.event = c->win;
@@ -920,7 +954,11 @@ configure(Client *c)
 	ce.width = c->w;
 	ce.height = c->h;
 	ce.border_width = c->bw;
+	/* Whether the client window is above or below a certain window. This is irrelevant so we
+	 * pass None. */
 	ce.above = None;
+	/* Whether the window manages itself. The window manager manages this client window so we
+	 * set this to False. */
 	ce.override_redirect = False;
 	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
 }
@@ -1058,20 +1096,51 @@ configurerequest(XEvent *e)
 	XSync(dpy, False);
 }
 
+/* This creates and returns a new monitor structure.
+ *
+ * The monitor's position and size are set in the updategeom function which handles monitor setup.
+ *
+ * @called_from updategeom to create new monitors
+ * @calls ecalloc to allocate memory for the new structure
+ * @calls strncpy to copy the default layout symbol into the monitor layout symbol
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> updategeom -> createmon
+ *    main -> setup -> updategeom -> createmon
+ */
 Monitor *
 createmon(void)
 {
 	Monitor *m;
 
+	/* Allocate memory to hold the new monitor. */
 	m = ecalloc(1, sizeof(Monitor));
+
+	/* This sets the current and previous tagset to 1, as in the first tag is selected by
+	 * default. */
 	m->tagset[0] = m->tagset[1] = 1;
+
+	/* We set the default master / stack factor, number of clients in the master area, whether
+	 * to show the bar by default and its location based on the corresponding variables set in
+	 * the configuration file. */
 	m->mfact = mfact;
 	m->nmaster = nmaster;
 	m->showbar = showbar;
 	m->topbar = topbar;
+
+	/* This sets the first layout as selected by default (which is the tile layout as per the
+	 * default configuration). */
 	m->lt[0] = &layouts[0];
+
+	/* This sets the previous layout as the last layout (which is the monocle layout as per the
+	 * default configuration). */
 	m->lt[1] = &layouts[1 % LENGTH(layouts)];
+
+	/* This copies the layout symbol from the first layout into the monitor's layout symbol.
+	 * This is later used when drawing the layout symbol on the bar. */
 	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
+
+	/* Return the newly created monitor. */
 	return m;
 }
 
@@ -1446,52 +1515,112 @@ focus(Client *c)
 	drawbars();
 }
 
-/* there are some broken focus acquiring clients needing extra handling */
+/* This handles FocusIn events coming from the X server.
+ *
+ * There are some broken focus acquiring windows that needs extra handling to work properly.
+ *
+ * @called_from run (the event handler)
+ * @calls setfocus to tell the window to take focus
+ * @see https://tronche.com/gui/x/xlib/events/input-focus/
+ *
+ * Internal call stack:
+ *    run -> focusin
+ */
 void
 focusin(XEvent *e)
 {
 	XFocusChangeEvent *ev = &e->xfocus;
 
+	/* This sets focus back to the selected window if the window the event is for is not the
+	 * window for the selected client. */
 	if (selmon->sel && ev->window != selmon->sel->win)
 		setfocus(selmon->sel);
 }
 
+/* User function to focus on an adjacent monitor in a given direction.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls dirtomon to work out the next monitor in the given direction
+ * @calls unfocus to unfocus the selected client on the current monitor
+ * @calls focus to focus on the last focused client on the next monitor
+ *
+ * Internal call stack:
+ *    run -> keypress -> focusmon
+ */
 void
 focusmon(const Arg *arg)
 {
 	Monitor *m;
 
+	/* Bail if this is a single monitor setup */
 	if (!mons->next)
 		return;
+
+	/* Find the next monitor in a given direction. There is a guard here to bail if the monitor
+	 * returned by dirtomon is the same monitor as we are currently on. In principle this should
+	 * never happen. */
 	if ((m = dirtomon(arg->i)) == selmon)
 		return;
+
+	/* Unfocus the selected client (if any) on the current monitor before changing focus. */
 	unfocus(selmon->sel, 0);
+
+	/* Set the selected monitor to the next monitor. */
 	selmon = m;
+
+	/* Focus on the last focused window on the new monitor (if any). */
 	focus(NULL);
 }
 
+/* User function to change focus between visible windows on the selected monitor.
+ *
+ * @called_from keypress in relation to keybindings
+ * @calls focus to give input focus to the next client
+ * @calls restack to place the selected client, if floating, above other floating windows
+ *
+ * Internal call stack:
+ *    run -> keypress -> focusmon
+ */
 void
 focusstack(const Arg *arg)
 {
 	Client *c = NULL, *i;
 
+	/* Bail if there is no selected client on the current monitor, or if the selected client is
+	 * fullscreen and we disallow focus to drift from fullscreen windows. */
 	if (!selmon->sel || (selmon->sel->isfullscreen && lockfullscreen))
 		return;
+
+	/* If the input value is positive then we move forward to find the next visible client. */
 	if (arg->i > 0) {
+		/* This searches through the client list for the next visible client. */
 		for (c = selmon->sel->next; c && !ISVISIBLE(c); c = c->next);
+		/* If we have exhausted the list and there are no more visible clients, then we wrap
+		 * around and search for the first visible client in the list. */
 		if (!c)
 			for (c = selmon->clients; c && !ISVISIBLE(c); c = c->next);
+	/* Otherwise we move backward to find the prior visible client. */
 	} else {
+		/* Start from the beginning of the linked list and find the last visible client that
+		 * is not the selected client. */
 		for (i = selmon->clients; i != selmon->sel; i = i->next)
 			if (ISVISIBLE(i))
 				c = i;
+		/* If there are no visible clients prior to the selected one then we simply continue
+		 * where the previous for loop left off and we search for the very last visible
+		 * client. */
 		if (!c)
 			for (; i; i = i->next)
 				if (ISVISIBLE(i))
 					c = i;
 	}
+	/* If we did find a client, and in principle we should as there is at least one visible
+	 * window, then we give input focus to that client. */
 	if (c) {
 		focus(c);
+		/* The explicit restack here is in the event that the client window is floating, or
+		 * we are using the floating layout, in which case we want the selected client to be
+		 * placed above other floating windows. */
 		restack(selmon);
 	}
 }
@@ -2300,7 +2429,7 @@ movemouse(const Arg *arg)
  * @called_from zoom to check if the selected client is the master client
  *
  * Internal call stack:
- *    ~ -> arrangemon -> tile / monocle -> nexttiled
+ *    ~ -> arrange -> arrangemon -> tile / monocle -> nexttiled
  *    run -> keypress -> zoom -> nexttiled
  */
 Client *
@@ -2483,7 +2612,7 @@ recttomon(int x, int y, int w, int h)
  *
  * Internal call stack:
  *    ~ -> arrange -> showhide -> resize
- *    ~ -> arrangemon -> monocle / tile -> resize
+ *    ~ -> arrange -> arrangemon -> monocle / tile -> resize
  *    run -> keypress -> movemouse / resizemouse / togglefloating -> resize
  */
 void
@@ -2504,7 +2633,7 @@ resize(Client *c, int x, int y, int w, int h, int interact)
  *
  * Internal call stack:
  *    ~ -> resize -> resizeclient
- *    ~ -> clientmessage / updatewindowtype -> setfullscreen -> resizeclient
+ *    run -> clientmessage / updatewindowtype -> setfullscreen -> resizeclient
  *    run -> configurenotify -> resizeclient
  */
 void
@@ -2696,7 +2825,7 @@ setclientstate(Client *c, long state)
  * @calls XSendEvent https://tronche.com/gui/x/xlib/event-handling/XSendEvent.html
  * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
  * @see https://tronche.com/gui/x/xlib/events/structures.html
- * @see https://tronche.com/gui/x/xlib/events/client-communication/client-message.html#XClientMessageEvent
+ * @see https://tronche.com/gui/x/xlib/events/client-communication/client-message.html
  * @returns 1 if the client window supports the given protocol, 0 otherwise
  *
  * Internal call stack:
