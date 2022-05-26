@@ -97,6 +97,7 @@ struct Client {
 	int basew, baseh, incw, inch, maxw, maxh, minw, minh, hintsvalid;
 	int bw, oldbw;
 	unsigned int tags;
+	/* oldstate only used for isfloating */
 	int isfixed, isfloating, isurgent, neverfocus, oldstate, isfullscreen;
 	Client *next;
 	Client *snext;
@@ -1863,28 +1864,115 @@ expose(XEvent *e)
 		drawbar(m);
 }
 
+/* This function gives input focus to a given client.
+ *
+ * If the given client is NULL then focus will be given to the next visible client in the stacking
+ * order. What this means is that the window that last had focus will receive input focus.
+ *
+ * If there are no more visible clients then input focus will be reverted to the root window.
+ *
+ * @called_from buttonpress if the event results in focus going to a different monitor
+ * @called_from configurenotify if monitor setup changes
+ * @called_from enternotify to focus on window entered with the mouse cursor
+ * @called_from focusmon to focus on the window that last had focus on a monitor
+ * @called_from focusstack to focus on the next or previous client in the client list
+ * @called_from manage to focus on the newly managed client
+ * @called_from motionnotify to focus on the window that last had focus on a monitor
+ * @called_from movemouse to give input focus to the client after moving it to another monitor
+ * @called_from resizemouse to give input focus to the client after resizing it to another monitor
+ * @called_from pop to focus on the client becoming the new master
+ * @called_from sendmon to set focus after moving a client to another monitor
+ * @called_from setup to revert input focus back to the root window
+ * @called_from tag to give focus to the next client in the stack after moving a client to a tag
+ * @called_from toggletag to give focus to the next client in the stack after toggling a tag
+ * @called_from toggleview to give focus after toggling tags into or out of view
+ * @called_from unmanage to give focus to the next client in the stack after unmanaging a client
+ * @called_from view to give focus after changing view
+ * @calls XSetWindowBorder https://tronche.com/gui/x/xlib/window/XSetWindowBorder.html
+ * @calls XSetInputFocus https://tronche.com/gui/x/xlib/input/XSetInputFocus.html
+ * @calls XDeleteProperty https://tronche.com/gui/x/xlib/window-information/XDeleteProperty.html
+ * @calls unfocus to unfocus and restore window border for the previously selected window
+ * @calls seturgent to remove urgency flag if set
+ * @calls detachstack to place the client window at the top of the stacking order
+ * @calls attachstack to place the client window at the top of the stacking order
+ * @calls grabbuttons as we listen for different button presses for a window that has focus
+ * @calls setfocus to give the target client input focus
+ * @calls drawbars to update the bars on all monitors
+ * @see https://tronche.com/gui/x/xlib/events/input-focus/
+ *
+ * Internal call stack:
+ *    run -> buttonpress -> focus
+ *    run -> buttonpress -> movemouse / resizemouse -> focus
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> focus
+ *    run -> buttonpress -> tag -> focus
+ *    run -> buttonpress -> toggletag -> focus
+ *    run -> buttonpress -> toggleview -> focus
+ *    run -> buttonpress -> view -> focus
+ *    run -> configurenotify -> focus
+ *    run -> destroynotify / unmapnotify -> unmanage -> focus
+ *    run -> enternotify -> focus
+ *    run -> keypress -> focusmon -> focus
+ *    run -> keypress -> focusstack -> focus
+ *    run -> keypress -> zoom -> pop -> focus
+ *    run -> keypress -> tagmon -> sendmon -> focus
+ *    run -> keypress -> tag -> focus
+ *    run -> keypress -> toggletag -> focus
+ *    run -> keypress -> toggleview -> focus
+ *    run -> keypress -> view -> focus
+ *    run -> maprequest -> manage -> focus
+ *    run -> motionnotify -> focus
+ *    main -> setup -> focus
+ *    main -> cleanup -> view -> focus
+ */
 void
 focus(Client *c)
 {
+	/* If the given client is NULL, or it happens to not be visible, then search the first
+	 * visible client in the stacking order list. */
 	if (!c || !ISVISIBLE(c))
 		for (c = selmon->stack; c && !ISVISIBLE(c); c = c->snext);
+	/* If there is a selected client on the current monitor and that is different to the client
+	 * receiving focus, then we call unfocus on that client. */
 	if (selmon->sel && selmon->sel != c)
 		unfocus(selmon->sel, 0);
+	/* If we are giving focus to a specific client then */
 	if (c) {
+		/* if that client is on a different monitor than the selected monitor, then we set
+		 * the selected monitor to be that of the client. */
 		if (c->mon != selmon)
 			selmon = c->mon;
+		/* If the client has the urgency flag set then we remove that as the window is
+		 * receiving attention now. */
 		if (c->isurgent)
 			seturgent(c, 0);
+		/* The detachstack and attachstack calls makes it so that the client becomes on top
+		 * of the stacking order, making it the last window to have received focus. */
 		detachstack(c);
 		attachstack(c);
+		/* We grab buttons for the window again as we are listening on less button presses
+		 * for windows that have input focus. */
 		grabbuttons(c, 1);
+		/* We change the colour of the window border to give a visual clue as to what window
+		 * has focus. */
 		XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
+		/* The call to setfocus handles the actual library calls to give the window input
+		 * focus. This is handled separately as setfocus can also be called from the focusin
+		 * event handler function. */
 		setfocus(c);
+	/* It may be that there are no visible clients on the monitor, in which case we revert the
+	 * input focus back to the root window. */
 	} else {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+		/* We also delete the _NET_ACTIVE_WINDOW property on the root window as this property
+		 * tells other windows which window is currently active - and at this moment the
+		 * window manager has no window that is active. */
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
 	}
+	/* Set the selected client to be the one receiving focus, or to NULL in the event that there
+	 * are no visible clients. */
 	selmon->sel = c;
+	/* Finally update the bars on all monitors. This is in case the focus change resulted in the
+	 * selected monitor changing. */
 	drawbars();
 }
 
@@ -3123,6 +3211,30 @@ resizemouse(const Arg *arg)
 	}
 }
 
+/* The restack function's primary responsibility is to:
+ *    - make the selected client above others if it is floating and
+ *    - to place all tiled clients below the bar
+ *
+ * Additionally the restack function incorporates a call to drawbar out of convenience as the two
+ * are often called together.
+ *
+ * @called_from arrange to restack a monitor as part of a full arrange
+ * @called_from buttonpress to make floating windows clicked on become above other windows
+ * @called_from focusstack to make floating windows receiving focus to become above other windows
+ * @called_from movemouse to make the window being moved above others if floating
+ * @called_from resizemouse to make the window being reized above others if floating
+ * @calls XRaiseWindow https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
+ * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls XCheckMaskEvent https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XCheckWindowEvent.html
+ * @calls drawbar as restack and drawbar are often two calls that are done together
+ *
+ * Internal call stack:
+ *    ~ -> arrange -> restack
+ *    run -> buttonpress -> restack
+ *    run -> keypress -> focusstack -> restack
+ *    run -> buttonpress -> movemouse / resizemouse -> restack
+ */
 void
 restack(Monitor *m)
 {
@@ -3130,21 +3242,49 @@ restack(Monitor *m)
 	XEvent ev;
 	XWindowChanges wc;
 
+	/* The drawbar call here stands out as being misplaced as it has nothing to do with the
+	 * objective of the function, neither does the restacking affect anything in the bar.
+	 * Most likely it has been added out of convenience because often when restack is called we
+	 * also want to call drawbar for other reasons. Including that call in here saves a few
+	 * lines of code. */
 	drawbar(m);
+
+	/* Bail if there is no selected client on the given monitor. */
 	if (!m->sel)
 		return;
+
+	/* If the selected client is floating, or if we are using floating layout, then place the
+	 * selected window above all other windows. */
 	if (m->sel->isfloating || !m->lt[m->sellt]->arrange)
 		XRaiseWindow(dpy, m->sel->win);
+
+	/* If we are not using floating layout then we place all tiled clients below the bar
+	 * window (in terms of how windows stack on top of each other). */
 	if (m->lt[m->sellt]->arrange) {
 		wc.stack_mode = Below;
 		wc.sibling = m->barwin;
+		/* Loop through each client in the stacking order list */
 		for (c = m->stack; c; c = c->snext)
+			/* If we have a tiled client that is visible, then we place that below the
+			 * bar window. */
 			if (!c->isfloating && ISVISIBLE(c)) {
 				XConfigureWindow(dpy, c->win, CWSibling|CWStackMode, &wc);
+				/* Note that the sibling is changed from the bar window to the last
+				 * window that was changed. This makes it so that the order of the
+				 * windows are preserved, just that all the tiled windows are below
+				 * the bar window. For this reason we are looping through the stacking
+				 * order list (m->stack) rather than the client list. */
 				wc.sibling = c->win;
 			}
 	}
+	/* This flushes the output buffer and then waits until all requests have been
+	 * received and processed by the X server. */
 	XSync(dpy, False);
+	/* This seemingly benign line of code is actually very important. What this does is that
+	 * it checks the X event queue if there are any EnterNotify events waiting as a result
+	 * of the change in stacking order above and simply swallows (ignores) them. This avoids
+	 * situations where two overlapping windows begin to flicker back and forth due to competing
+	 * and continously generated EnterNotify events. */
 	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev));
 }
 
@@ -3464,30 +3604,82 @@ setfocus(Client *c)
 	sendevent(c, wmatom[WMTakeFocus]);
 }
 
+/* This sets or removes fullscreen for a given client.
+ *
+ * The fullscreen parameter indicates whether the client should be in fullscreen or not.
+ *
+ * This function has two if statements that handle going into and going out of fullscreen.
+ * If the client window is already in the desired state then no action will be taken.
+ *
+ * @called_from clientmessage in relation to _NET_WM_STATE and _NET_WM_STATE_FULLSCREEN messages
+ * @called_from updatewindowtype in relation to _NET_WM_STATE window property
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ * @calls XRaiseWindow https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
+ * @calls resizeclient to resize the client going into or out of fullscreen
+ * @calls arrange to re-arrange clients when the client exits fullscreen
+ *
+ * Internal call stack:
+ *    run -> clientmessage / updatewindowtype -> setfullscreen
+ */
 void
 setfullscreen(Client *c, int fullscreen)
 {
+	/* If the desired state is fullscreen and the client window is not in fullscreen then */
 	if (fullscreen && !c->isfullscreen) {
+		/* This changes the _NET_WM_STATE property of the client window to indicate that the
+		 * client is now in fullscreen. */
 		XChangeProperty(dpy, c->win, netatom[NetWMState], XA_ATOM, 32,
 			PropModeReplace, (unsigned char*)&netatom[NetWMFullscreen], 1);
+		/* Internal flag used to prevent some actions when a client is in fullscreen. For
+		 * example this blocks move or resize being performed on a fullscreen window. */
 		c->isfullscreen = 1;
+		/* Record the state of the client before it went into fullscreen. This because we
+		 * want to revert to that when the client exits fullscreen. */
 		c->oldstate = c->isfloating;
 		c->oldbw = c->bw;
+		/* We do not want a border to be drawn for the fullscreen window. */
 		c->bw = 0;
+		/* A fullscreen window is floating above other windows. This is primarily to keep
+		 * the fullscreen window as-is on top of others in case an arrange or restack should
+		 * take place. */
 		c->isfloating = 1;
+		/* Resize the client to span the entire monitor. Note that we use the monitor
+		 * position and size here rather than the coordinates and size of the monitor window
+		 * area. More importantly we are calling resizeclient here rather than resize as we
+		 * do not want size hints to interfere with the size. */
 		resizeclient(c, c->mon->mx, c->mon->my, c->mon->mw, c->mon->mh);
+		/* Finally we raise the window to be above everything else. */
 		XRaiseWindow(dpy, c->win);
+	/* If the desired state is to exit fullscreen and the client window is in fullscreen then */
 	} else if (!fullscreen && c->isfullscreen){
+		/* This changes the _NET_WM_STATE property of the client window to indicate that the
+		 * client is no longer in fullscreen. */
 		XChangeProperty(dpy, c->win, netatom[NetWMState], XA_ATOM, 32,
 			PropModeReplace, (unsigned char*)0, 0);
+		/* Change the internal flag to say that the client is not in fullscreen. */
 		c->isfullscreen = 0;
+		/* Restore the old state, border width, size and position of the client. */
 		c->isfloating = c->oldstate;
 		c->bw = c->oldbw;
 		c->x = c->oldx;
 		c->y = c->oldy;
 		c->w = c->oldw;
 		c->h = c->oldh;
+		/* When exiting fullscreen we again make a call to resizeclient rather than resize.
+		 * This time it is not because we do not want size hints to interfere, but because
+		 * having set the position and size above the call to applysizehints would result in
+		 * it returning 0 because as far as it is concerned the size has not changed (and the
+		 * resize would not take place). The alternative would be to not set the old
+		 * positional and size data, but instead pass these directly to the resize call.
+		 * The gotcha with that, however, is that the size and position may need to be
+		 * adjusted taking the border width into account. Just restoring the positional and
+		 * size data and calling resizeclient directly is a simpler solution. */
 		resizeclient(c, c->x, c->y, c->w, c->h);
+		/* Finally a full arrange which is more of a catch all in terms of cleaning up any
+		 * inconsistencies. Most of the work done by this call will likely be redundant.
+		 * In all likelihood the most important aspect of the full arrange call will be the
+		 * restack which will take the raised window and place it among all the other windows
+		 * (below the bar if tiled, above otherwise). */
 		arrange(c->mon);
 	}
 }
