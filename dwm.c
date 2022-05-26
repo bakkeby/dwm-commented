@@ -250,6 +250,7 @@ static char stext[256];
 /* This holds the default screen value, used when creating windows and handling the display etc. */
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
+
 /* bh is short for bar height, as in how tall the bar is.
  * blw is short for bar layout width and it is set in the drawbar function based on the layout
  * symbol and it is read in the buttonpress function when determining whether the user clicked on
@@ -257,10 +258,12 @@ static int sw, sh;           /* X display screen geometry width, height */
  */
 static int bh, blw = 0;      /* bar geometry */
 static int lrpad;            /* sum of left and right padding for text */
+
 /* This is the reference we store the X error handler in and it is used in the xerror function for
  * any errors that are not simply ignored. Search the code for xerrorxlib to see how this set and
  * used. */
 static int (*xerrorxlib)(Display *, XErrorEvent *);
+
 /* The static global numlockmask variable that holds the modifier that is related to the
  * Num Lock key.
  *
@@ -274,15 +277,12 @@ static int (*xerrorxlib)(Display *, XErrorEvent *);
  * press combinations.
  */
 static unsigned int numlockmask = 0;
+
 /* This is what maps event types to the functions that handles those event types.
  *
  * This is primarily used in the run function which handles the event loop, but it is also used
  * in the movemouse and resizemouse functions that temporarily hooks into the event loop for a few
  * select event types while client windows are being moved or resized.
- *
- * As per the header comment at the top of this file we have that:
- *    The event handlers of dwm are organized in an array which is accessed whenever
- *    a new event has been fetched. This allows event dispatching in O(1) time.
  */
 static void (*handler[LASTEvent]) (XEvent *) = {
 	[ButtonPress] = buttonpress,
@@ -539,16 +539,83 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 	return *x != c->x || *y != c->y || *w != c->w || *h != c->h;
 }
 
+/* The arrange call handles moving clients into and out of view depending on what tags are shown
+ * and it triggers a re-arrangement of windows according to the selected layout.
+ *
+ * Passing a NULL value to arrange results in the above happening for all monitors. Passing a
+ * specific monitor to the arrange function results in the above happening for that monitor and
+ * in addition a restack is applied which will call drawbar.
+ *
+ * @called_from configurenotify if the monitor setup has changed
+ * @called_from incnmaster after the number of master clients have been adjusted
+ * @called_from manage upon managing a new client
+ * @called_from pop in relation to a call to zoom to make a client window the new master
+ * @called_from propertynotify in relation to a window becoming floating due to being transient
+ * @called_from sendmon after moving a client window to another monitor
+ * @called_from setfullscreen when a fullscreen window exits fullscreen
+ * @called_from setlayout if there visible client windows to be arranged after changing layout
+ * @called_from setmfact after the master / stack factor has been changed
+ * @called_from tag when changing tags for the selected client
+ * @called_from togglebar after revealing or hiding the bar
+ * @called_from togglefloating after changing the floating state for the selected client
+ * @called_from toggletag after changing a client's tags
+ * @called_from toggleview after bringing tags into or out of view
+ * @called_from unmanage after unmanaging a window
+ * @called_from view after changing the tag(s) viewed
+ * @calls showhide to move client windows into and out of view
+ * @calls arrangemon to trigger re-arrangement of windows according to the selected layout
+ * @calls restack to draw the bar and adjust which clients are shown above others
+ *
+ * Internal call stack:
+ *    run -> configurenotify -> arrange
+ *    run -> buttonpress -> tag -> arrange
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> arrange
+ *    run -> buttonpress -> movemouse / resizemouse -> togglefloating -> arrange
+ *    run -> buttonpress -> togglefloating -> arrange
+ *    run -> buttonpress -> toggletag -> arrange
+ *    run -> buttonpress -> toggleview -> arrange
+ *    run -> buttonpress -> view -> arrange
+ *    run -> keypress -> incnmaster -> arrange
+ *    run -> keypress -> setlayout -> arrange
+ *    run -> keypress -> setmfact -> arrange
+ *    run -> keypress -> zoom -> pop -> arrange
+ *    run -> keypress -> tagmon -> sendmon -> arrange
+ *    run -> keypress -> tag -> arrange
+ *    run -> keypress -> togglebar -> arrange
+ *    run -> keypress -> togglefloating -> arrange
+ *    run -> keypress -> toggletag -> arrange
+ *    run -> keypress -> toggleview -> arrange
+ *    run -> keypress -> view -> arrange
+ *    run -> maprequest -> manage -> arrange
+ *    run -> propertynotify -> arrange
+ *    run -> clientmessage / updatewindowtype -> setfullscreen -> arrange
+ *    run -> destroynotify / unmapnotify -> unmanage -> arrange
+ *    main -> cleanup -> view -> arrange
+ */
 void
 arrange(Monitor *m)
 {
+	/* If we have been given a specific monitor then call showhide to move windows into and out
+	 * of view for that monitor. */
 	if (m)
 		showhide(m->stack);
+	/* Otherwise we call showhide for all monitors */
 	else for (m = mons; m; m = m->next)
 		showhide(m->stack);
+
+	/* In similar vein, if we have been given a specific monitor then we call arrangemon to
+	 * re-arrange client windows according to the the layout. */
 	if (m) {
 		arrangemon(m);
+		/* The one additional thing we do when given a specific monitor is to call restack.
+		 * The purpose of that function is to raise the selected window above others if it is
+		 * floating and to move all tiled windows below the bar window. In practice this only
+		 * has an effect in maybe one or two scenarios where arrange is called, for example
+		 * it will likely have an effect when togglefloating calls arrange as the selected
+		 * client will have changed the floating state. As such the primary reason for the
+		 * restack call here is likely to trigger drawbar for the monitor. */
 		restack(m);
+	/* Otherwise we call arrangemon for all monitors */
 	} else for (m = mons; m; m = m->next)
 		arrangemon(m);
 }
@@ -602,7 +669,8 @@ arrangemon(Monitor *m)
  * Internal call stack:
  *    run -> maprequest -> manage -> attach
  *    run -> keypress -> zoom -> pop -> attach
- *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> attach
+ *    run -> keypress -> tagmon -> sendmon -> attach
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> attach
  *    run -> configurenotify -> updategeom -> attach
  */
 void
@@ -630,7 +698,8 @@ attach(Client *c)
  * Internal call stack:
  *    ~ -> focus -> attachstack
  *    run -> maprequest -> manage -> attachstack
- *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> attachstack
+ *    run -> keypress -> tagmon -> sendmon -> attachstack
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> attachstack
  *    run -> configurenotify -> updategeom -> attachstack
  */
 void
@@ -992,34 +1061,110 @@ cleanupmon(Monitor *mon)
 	free(mon);
 }
 
-/*
- * You can test this by finding the window ID of a given window using xwininfo (e.g. 0x5000002) or
- * using xdotool search (94371846) and using xdo or xdotool to activate that window.
+/* This handles ClientMessage events coming from the X server.
  *
- *    $ xdo activate 0x5a00006
- *    $ xdotool windowactivate 94371846
+ * dwm only handles two types of client messages and these are:
  *
- * Should you need to convert between decimal and hexadecimal window IDs we have:
+ *    _NET_WM_STATE > _NET_WM_STATE_FULLSCREEN and
+ *    _NET_ACTIVE_WINDOW
  *
- *    $ echo $((0x5a00006))
- *    94371846
+ * It is possible to expand this function to handle other states and message types.
  *
- *    $ printf '0x%x\n' 94371846
- *    0x5a00006
+ * @called_from run (the event handler)
+ * @calls wintoclient to find the client the given event is for
+ * @calls setfullscreen to make a window fullscreen when _NET_WM_STATE_FULLSCREEN is received
+ * @calls seturgent to mark a client as urgent when _NET_ACTIVE_WINDOW is received
+ * @see https://tronche.com/gui/x/xlib/events/client-communication/client-message.html
+ * @see https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html
+ * @see https://specifications.freedesktop.org/wm-spec/wm-spec-1.3.html#idm45805407959456
+ *
+ * Internal call stack:
+ *    run -> clientmessage
  */
 void
 clientmessage(XEvent *e)
 {
 	XClientMessageEvent *cme = &e->xclient;
+	/* Find the client the window is in relation to. */
 	Client *c = wintoclient(cme->window);
 
+	/* If we are not managing this window then ignore the event. */
 	if (!c)
 		return;
+
+	/* This handles the _NET_WM_STATE message type.
+	 *
+	 * To change the state of a mapped window, a client MUST send a _NET_WM_STATE client message
+	 * to the root window.
+	 *
+	 *    window  = the respective client window
+	 *    message_type = _NET_WM_STATE
+	 *    format = 32
+	 *    data.l[0] = the action, as listed below
+	 *    data.l[1] = first property to alter
+	 *    data.l[2] = second property to alter
+	 *    data.l[3] = source indication
+	 *    other data.l[] elements = 0
+	 *
+	 * _NET_WM_STATE_REMOVE        0  // remove/unset property
+	 * _NET_WM_STATE_ADD           1  // add/set property
+	 * _NET_WM_STATE_TOGGLE        2  // toggle property
+	 *
+	 * This message allows two properties to be changed simultaneously, specifically to allow
+	 * both horizontal and vertical maximisation to be altered together. As such we need to
+	 * check both the first and second property when handling state property types.
+	 *
+	 * Possible atoms are:
+	 *
+	 *    _NET_WM_STATE_MODAL
+	 *    _NET_WM_STATE_STICKY
+	 *    _NET_WM_STATE_MAXIMIZED_VERT
+	 *    _NET_WM_STATE_MAXIMIZED_HORZ
+	 *    _NET_WM_STATE_SHADED
+	 *    _NET_WM_STATE_SKIP_TASKBAR
+	 *    _NET_WM_STATE_SKIP_PAGER
+	 *    _NET_WM_STATE_HIDDEN
+	 *    _NET_WM_STATE_FULLSCREEN
+	 *    _NET_WM_STATE_ABOVE
+	 *    _NET_WM_STATE_BELOW
+	 *    _NET_WM_STATE_DEMANDS_ATTENTION
+	 *
+	 * Out of the above dwm only supports _NET_WM_STATE_FULLSCREEN by default.
+	 */
 	if (cme->message_type == netatom[NetWMState]) {
+		/* If the property being changed is _NET_WM_STATE_FULLSCREEN then */
 		if (cme->data.l[1] == netatom[NetWMFullscreen]
 		|| cme->data.l[2] == netatom[NetWMFullscreen])
+			/* call setfullscreen for the client window passing:
+			 *    1 if the action is to add fullscreen
+			 *    1 if the action is to toggle fullscreen and the client is not fullscreen
+			 *    0 otherwise to exit fullscreen
+			 */
 			setfullscreen(c, (cme->data.l[0] == 1 /* _NET_WM_STATE_ADD    */
 				|| (cme->data.l[0] == 2 /* _NET_WM_STATE_TOGGLE */ && !c->isfullscreen)));
+
+	/* The below handles the _NET_ACTIVE_WINDOW message type and the action taken by dwm is to
+	 * set the urgency flag for the client unless it is the selected window.
+	 *
+	 * A client marked as urgent will result in the tag the client is present on to have its
+	 * colours inverted (as in the foreground and background colours swapping place) on the bar
+	 * unless the tag is selected.
+	 *
+	 * You can test this by finding the window ID of a given window using xwininfo (e.g.
+	 * 0x5000002) or using xdotool search (94371846) and using xdo or xdotool to activate that
+	 * window.
+	 *
+	 *    $ xdo activate 0x5a00006
+	 *    $ xdotool windowactivate 94371846
+	 *
+	 * Should you need to convert between decimal and hexadecimal window IDs we have:
+	 *
+	 *    $ echo $((0x5a00006))
+	 *    94371846
+	 *
+	 *    $ printf '0x%x\n' 94371846
+	 *    0x5a00006
+	 */
 	} else if (cme->message_type == netatom[NetActiveWindow]) {
 		if (c != selmon->sel && !c->isurgent)
 			seturgent(c, 1);
@@ -1112,7 +1257,7 @@ configurenotify(XEvent *e)
 			 *    drw = drw_create(dpy, screen, root, sw, sh);
 			 *
 			 * This does not seem to affect the operability of dwm, however, as all that
-			 * the window manager draws is the bar which does not exceeed the bar height.
+			 * the window manager draws is the bar which does not exceed the bar height.
 			 */
 			drw_resize(drw, sw, bh);
 			/* This call to updatebars is to create new bar windows in the event that the
@@ -1139,13 +1284,24 @@ configurenotify(XEvent *e)
 	}
 }
 
-/*
+/* This handles ConfigureRequest events coming from the X server.
+ *
+ * The configure window request attempts to reconfigure a window's size, position, border, and
+ * stacking order.
+ *
+ * @called_from run (the event handler)
  * @called_from movemouse as it forwards events to configurerequest
  * @called_from resizemouse as it forwards events to configurerequest
+ * @calls XMoveResizeWindow https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
+ * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls wintoclient to find the client the event is in relation to
+ * @calls configure to let the client window know what has changed
+ * @see https://tronche.com/gui/x/xlib/events/structure-control/configure.html
  *
  * Internal call stack:
  *    run -> configurerequest
- *    run -> keypress -> movemouse / resizemouse -> configurerequest
+ *    run -> buttonpress -> movemouse / resizemouse -> configurerequest
  */
 void
 configurerequest(XEvent *e)
@@ -1155,37 +1311,86 @@ configurerequest(XEvent *e)
 	XConfigureRequestEvent *ev = &e->xconfigurerequest;
 	XWindowChanges wc;
 
+	/* If the event is in relation to a client window (as in a managed window). */
 	if ((c = wintoclient(ev->window))) {
+		/* If the event includes a value for the border width then we accept that and set
+		 * that value for the client. Notably we ignore any other data the event contains
+		 * if it includes a value for the border width. */
 		if (ev->value_mask & CWBorderWidth)
 			c->bw = ev->border_width;
+		/* Otherwise if the client is floating or if we are in floating layout */
 		else if (c->isfloating || !selmon->lt[selmon->sellt]->arrange) {
 			m = c->mon;
+			/* If the event includes a position on the X axis then accept a change in
+			 * position. What is worth noting here is that dwm treats the event X position
+			 * as being relative to the monitor the window is on. This has to do with how
+			 * dwm treats different monitors as separate areas.
+			 *
+			 * This can cause issues with some programs that assume the X and Y positions
+			 * are absolute references (as they are on stacking window managers) causing
+			 * the window to move to an unexpected location depending on monitor setup.
+			 */
 			if (ev->value_mask & CWX) {
 				c->oldx = c->x;
 				c->x = m->mx + ev->x;
 			}
+
+			/* The same applies if the event includes a position on the Y axis. */
 			if (ev->value_mask & CWY) {
 				c->oldy = c->y;
 				c->y = m->my + ev->y;
 			}
+
+			/* If the event includes information on a new width then accept that. */
 			if (ev->value_mask & CWWidth) {
 				c->oldw = c->w;
 				c->w = ev->width;
 			}
+
+			/* If the event includes information on a new height then accept that. */
 			if (ev->value_mask & CWHeight) {
 				c->oldh = c->h;
 				c->h = ev->height;
 			}
+
+			/* If the client's position and size is such that the window would go across
+			 * the right hand monitor border then center the window on the X axis on the
+			 * client's monitor. This only applies when the client window is explicitly
+			 * floating and not when the client is tiled but floating layout is used. */
 			if ((c->x + c->w) > m->mx + m->mw && c->isfloating)
 				c->x = m->mx + (m->mw / 2 - WIDTH(c) / 2); /* center in x direction */
+
+			/* If the client's position and size is such that the window would go across
+			 * the bottom monitor border then center the window on the Y axis on the
+			 * client's monitor. This only applies when the client window is explicitly
+			 * floating and not when the client is tiled but floating layout is used. */
 			if ((c->y + c->h) > m->my + m->mh && c->isfloating)
 				c->y = m->my + (m->mh / 2 - HEIGHT(c) / 2); /* center in y direction */
+
+			/* If the event contained a positional change only (no change to height and
+			 * width) then we make a call to configure to inform the client about the new
+			 * position. Why exactly we only do this for positional changes for floating
+			 * windows only is not entirely clear, but the git commit history suggests
+			 * that this is specifically in relation to client windows that are fixed in
+			 * size and thus are floating. */
 			if ((ev->value_mask & (CWX|CWY)) && !(ev->value_mask & (CWWidth|CWHeight)))
 				configure(c);
+
+			/* If the client window is visible then we call XMoveResizeWindow to apply the
+			 * size and position adjustments. Note that client windows that request a
+			 * move or resize while they are not visible will, however, not be moved or
+			 * resized. */
 			if (ISVISIBLE(c))
 				XMoveResizeWindow(dpy, c->win, c->x, c->y, c->w, c->h);
+		/* Otherwise the client is tiled. In this case we just make a call to configure which
+		 * informs the window what its size and border width is. What this actually means is
+		 * that the client window requested a change and the window manager rejects that
+		 * request by responding with a ConfigureNotify event informing the client window
+		 * what its size, position and border width is. */
 		} else
 			configure(c);
+	/* If the configure request was not in relation to a managed window then we merely pass on
+	 * the window changes requested to the target window. */
 	} else {
 		wc.x = ev->x;
 		wc.y = ev->y;
@@ -1196,6 +1401,9 @@ configurerequest(XEvent *e)
 		wc.stack_mode = ev->detail;
 		XConfigureWindow(dpy, ev->window, ev->value_mask, &wc);
 	}
+
+	/* This flushes the output buffer and then waits until all requests have been received and
+	 * processed by the X server. */
 	XSync(dpy, False);
 }
 
@@ -1273,7 +1481,6 @@ destroynotify(XEvent *e)
 		unmanage(c, 1);
 }
 
-
 /* This removes a client from the monitor's client list.
  *
  * The client list is a linked list of client structures where one client refers to the next.
@@ -1288,7 +1495,8 @@ destroynotify(XEvent *e)
  *
  * Internal call stack:
  *    run -> keypress -> zoom -> pop -> detach
- *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> detach
+ *    run -> keypress -> tagmon -> sendmon -> detach
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> detach
  *    run -> destroynotify / unmapnotify -> unmanage -> detach
  */
 void
@@ -1371,7 +1579,8 @@ detach(Client *c)
  *
  * Internal call stack:
  *    ~ -> focus -> detachstack
- *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> detachstack
+ *    run -> keypress -> tagmon -> sendmon -> detachstack
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> detachstack
  *    run -> destroynotify / unmapnotify -> unmanage -> detachstack
  *    run -> configurenotify -> updategeom -> detachstack
  */
@@ -1501,6 +1710,27 @@ drawbars(void)
 		drawbar(m);
 }
 
+/* This handles EnterNotify events coming from the X server.
+ *
+ * These kind of events can be received when the mouse cursor moves from one window to another,
+ * as in the mouse cursor enters a new window.
+ *
+ * What this function primarily does is to change the selected monitor depending on what window the
+ * event was for, but it will also handle focus changes between client windows as mouse cursor
+ * enters windows. This is what is referred to as sloppy focus, as opposed to requiring the user to
+ * click on windows to select them.
+ *
+ * @called_from run (the event handler)
+ * @calls wintoclient to find the client the event is in relation to (if any)
+ * @calls wintomon to find the monitor the event is in relation to if it is not related to a client
+ * @calls unfocus to remove focus from the selected client when changing monitors
+ * @calls focus to give input focus to a given client or the next in line when changing monitors
+ * @see https://tronche.com/gui/x/xlib/events/window-entry-exit/normal.html
+ * @see https://tronche.com/gui/x/xlib/events/window-entry-exit/#XCrossingEvent
+ *
+ * Internal call stack:
+ *    run -> enternotify
+ */
 void
 enternotify(XEvent *e)
 {
@@ -1508,15 +1738,55 @@ enternotify(XEvent *e)
 	Monitor *m;
 	XCrossingEvent *ev = &e->xcrossing;
 
+	/* The event mode can be:
+	 *    - NotifyNormal
+	 *    - NotifyGrab
+	 *    - NotifyUngrab
+	 *
+	 * When the mouse pointer moves from window A to window B and A is an inferior of B, then
+	 * the X server:
+	 *    - generates a LeaveNotify event on window A, with the detail member of the
+	 *      XLeaveWindowEvent structure set to NotifyAncestor
+	 *    - generates a LeaveNotify event on each window between window A and window B,
+	 *      exclusive, with the detail member of each XLeaveWindowEvent structure set to
+	 *      NotifyVirtual
+	 *    - generates an EnterNotify event on window B, with the detail member of the
+	 *      XEnterWindowEvent structure set to NotifyInferior
+	 *
+	 * This next line says that:
+	 *    - it accepts any events for the root window
+	 *    - it will ignore events that have the NotifyGrab or NotifyUngrab mode and
+	 *    - it will ignore events with NotifyNormal that have NotifyInferior as the event detail
+	 *
+	 * The reason for why events that have the event detail of NotifyInferior is ignored is not
+	 * entirely clear.
+	 */
 	if ((ev->mode != NotifyNormal || ev->detail == NotifyInferior) && ev->window != root)
 		return;
+
+	/* Find the client this event is for (if any). */
 	c = wintoclient(ev->window);
+
+	/* If the event is in relation to a client then we use the client's monitor. If the event
+	 * is not in relation to a client then call wintomon to work out which monitor this window
+	 * is on. */
 	m = c ? c->mon : wintomon(ev->window);
+
+	/* If the monitor the event is related to is not the selected monitor, then we need to
+	 * change monitor so that the one we found becomes the selected one. */
 	if (m != selmon) {
+		/* Before we change monitor we need to unfocus the selected client on the previous
+		 * monitor and revert input focus to the root window. */
 		unfocus(selmon->sel, 1);
+		/* Setting the selected monitor to be monitor the event is in relation to. */
 		selmon = m;
+	/* If the monitor is the same and the event was not related to a client, or that client
+	 * is the currently selected client, then bail. */
 	} else if (!c || c == selmon->sel)
 		return;
+
+	/* Note that c may be NULL here, so this call either focuses on the client the event was
+	 * for, or we give input focus to the last client that had focus on this monitor. */
 	focus(c);
 }
 
@@ -1543,9 +1813,9 @@ enternotify(XEvent *e)
  *
  * Now this function is also called by the movemouse and resizemouse functions. This has to do with
  * that dwm is a single process program and when you click and drag a window around with the mouse
- * then the process is stuck in a while loop inside run -> keypress -> movemouse until you release
- * the button. In other words the event loop is held up while a move or resize takes place and as
- * such status updates stop happening as an example.
+ * then the process is stuck in a while loop inside run -> buttonpress -> movemouse until you
+ * release the button. In other words the event loop is held up while a move or resize takes place
+ * and as such status updates stop happening as an example.
  *
  * While the mouse is being moved or resized the respective function checks the event queue for
  * certain events and Expose events are one of the ones checked:
@@ -1577,7 +1847,7 @@ enternotify(XEvent *e)
  *
  * Internal call stack:
  *    run -> expose
- *    run -> keypress -> movemouse / resizemouse -> expose
+ *    run -> buttonpress -> movemouse / resizemouse -> expose
  */
 void
 expose(XEvent *e)
@@ -1776,7 +2046,7 @@ getatomprop(Client *c, Atom prop)
  * @calls XQueryPointer https://tronche.com/gui/x/xlib/window-information/XQueryPointer.html
  *
  * Internal call stack:
- *    run -> keypress -> movemouse -> getrootptr
+ *    run -> buttonpress -> movemouse -> getrootptr
  *    run -> configurenotify -> updategeom -> wintomon -> getrootptr
  *    main -> setup -> updategeom -> wintomon -> getrootptr
  */
@@ -1793,6 +2063,24 @@ getrootptr(int *x, int *y)
 	return XQueryPointer(dpy, root, &dummy, &dummy, x, y, &di, &di, &dui);
 }
 
+/* This function retrieves the window state for a given window.
+ *
+ * The window can be in one of the following states:
+ *
+ *    NormalState     - a normal visible window
+ *    WithdrawnState  - a window that is not visible to the user in any way
+ *    IconicState     - a window that is not visible to the user, but may be represented by an icon
+ *                      in a taskbar as an example - more commonly one would refer to such windows
+ *                      as being minimised
+ *
+ * @called_from scan to check if a window is in iconic state
+ * @calls XGetWindowProperty https://tronche.com/gui/x/xlib/window-information/XGetWindowProperty.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/wm-hints.html
+ *
+ * Internal call stack:
+ *    main -> scan -> getstate
+ */
 long
 getstate(Window w)
 {
@@ -1802,12 +2090,19 @@ getstate(Window w)
 	unsigned long n, extra;
 	Atom real;
 
+	/* This reads the WM_STATE property of a given window. If the property could not be read
+	 * then -1 will be returned. */
 	if (XGetWindowProperty(dpy, w, wmatom[WMState], 0L, 2L, False, wmatom[WMState],
 		&real, &format, &n, &extra, (unsigned char **)&p) != Success)
 		return -1;
+	/* If the property had a value then set that as the function's return value. */
 	if (n != 0)
 		result = *p;
+	/* Data returned by XGetWindowProperty must be freed by the caller. */
 	XFree(p);
+
+	/* Returns the value of the WM_STATE property or -1 in the exceptional event that the
+	 * property had no value. */
 	return result;
 }
 
@@ -2340,7 +2635,7 @@ mappingnotify(XEvent *e)
  *
  * Internal call stack:
  *    run -> maprequest -> manage
- *    run -> keypress -> movemouse / resizemouse -> maprequest
+ *    run -> buttonpress -> movemouse / resizemouse -> maprequest
  */
 void
 maprequest(XEvent *e)
@@ -2636,7 +2931,7 @@ quit(const Arg *arg)
  *
  * Internal call stack:
  *    run -> motionnotify -> recttomon
- *    run -> keypress -> movemouse / resizemouse -> recttomon
+ *    run -> buttonpress -> movemouse / resizemouse -> recttomon
  *    run -> buttonpress / enternotify / expose -> wintomon -> recttomon
  *    run -> configurenotify -> updategeom -> wintomon -> rectomon
  *    main -> setup -> updategeom -> wintomon -> rectomon
@@ -2716,7 +3011,8 @@ recttomon(int x, int y, int w, int h)
  * Internal call stack:
  *    ~ -> arrange -> showhide -> resize
  *    ~ -> arrange -> arrangemon -> monocle / tile -> resize
- *    run -> keypress -> movemouse / resizemouse / togglefloating -> resize
+ *    run -> buttonpress -> movemouse / resizemouse / togglefloating -> resize
+ *    run -> keypress -> togglefloating -> resize
  */
 void
 resize(Client *c, int x, int y, int w, int h, int interact)
@@ -2763,8 +3059,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	/* In principle the above call should be enough to change the size and position of the
 	 * window, but not all applications behave the same way and some need to be told that their
 	 * window has changed - so we send a XConfigureEvent to notify the window owner that the
-	 * dimensions or position has changed. This is handled in the configure function.
-	 */
+	 * dimensions or position has changed. This is handled in the configure function. */
 	configure(c);
 	/* This flushes the output buffer and then waits until all requests have been received and
 	 * processed by the X server. */
@@ -2853,39 +3148,138 @@ restack(Monitor *m)
 	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev));
 }
 
+/* The run function is what starts the event handler, which is the heart of dwm.
+ *
+ * The the event handler will keep going until:
+ *    - a fatal error occurs or
+ *    - the user triggers the quit function which sets the running variable to 0
+ *
+ * As per the header comment of this file we have that:
+ *
+ *    The event handlers of dwm are organized in an array which is accessed whenever
+ *    a new event has been fetched. This allows event dispatching in O(1) time.
+ *
+ * @called_by main to start the event handler
+ * @calls XNextEvent https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XNextEvent.html
+ * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
+ * @calls buttonpress to handle ButtonPress event types
+ * @calls clientmessage to handle ClientMessage event types
+ * @calls configurerequest to handle ConfigureRequest event types
+ * @calls configurenotify to handle ConfigureNotify event types
+ * @calls destroynotify to handle DestroyNotify event types
+ * @calls enternotify to handle EnterNotify event types
+ * @calls expose to handle Expose event types
+ * @calls focusin to handle FocusIn event types
+ * @calls keypress to handle KeyPress event types
+ * @calls mappingnotify to handle MappingNotify event types
+ * @calls maprequest to handle MapRequest event types
+ * @calls motionnotify to handle MotionNotify event types
+ * @calls propertynotify to handle PropertyNotify event types
+ * @calls unmapnotify to handle UnmapNotify event types
+ *
+ * Internal call stack:
+ *    main -> run
+ */
 void
 run(void)
 {
 	XEvent ev;
 	/* main event loop */
 	XSync(dpy, False);
+
+	/* The XNextEvent function copies the first event from the event queue into the specified
+	 * XEvent structure and then removes it from the queue. If the event queue is empty, then
+	 * XNextEvent flushes the output buffer and blocks until an event is received. */
 	while (running && !XNextEvent(dpy, &ev))
+		/* This calls the function corresponding to the specific event type. If we do not
+		 * have an event handler for the given event type then the event is ignored. Refer
+		 * to the handler array for how the event types and functions are mapped. */
 		if (handler[ev.type])
 			handler[ev.type](&ev); /* call handler */
 }
 
+/* This queries the X server to find windows that can be managed by the window manager.
+ *
+ * @called_from main to find existing windows that can be managed
+ * @calls XQueryTree https://tronche.com/gui/x/xlib/window-information/XQueryTree.html
+ * @calls XGetWindowAttributes https://tronche.com/gui/x/xlib/window-information/XGetWindowAttributes.html
+ * @calls XGetTransientForHint https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetTransientForHint.html
+ * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
+ * @calls getstate to check if the window state is iconic
+ * @calls manage to make the window manager manage this window as a client
+ * @see manage for how transient windows are handled
+ *
+ * Internal call stack:
+ *    main -> scan
+ */
 void
 scan(void)
 {
 	unsigned int i, num;
+	/* The d1 and d2 are dummy windows needed for the XQueryTree and XGetTransientForHint calls,
+	 * but the values are ignored. */
 	Window d1, d2, *wins = NULL;
 	XWindowAttributes wa;
 
+	/* This asks the X server for a list of windows under the given root window. */
 	if (XQueryTree(dpy, root, &d1, &d2, &wins, &num)) {
+		/* A transient window is intended to be a short lived window that belong to a parent
+		 * window. This might be a dialog box or a toolbox for example.
+		 *
+		 * In dwm transient windows are handled differently to other windows in that:
+		 *    - they inherit the monitor and tags from their parent window and
+		 *    - client rules do not apply to transient windows and
+		 *    - transient windows are always floating
+		 *
+		 * In order for the above to work correctly when loading existing windows into dwm
+		 * on startup we need to make sure to manage the parent windows first.
+		 *
+		 * As such we have two loops here where the first one goes through all normal windows
+		 * and a second loop that only handles transient windows.
+		 */
 		for (i = 0; i < num; i++) {
+			/* Skip the window if:
+			 *    - it is a transient window or
+			 *    - it has the override-redirect flag indicating that it handles position
+			 *      and size on its own and do not want a window manager interfering or
+			 *    - we fail to read the window attributes for that window (in which case
+			 *      it is not the kind of window that the end user would interact with)
+			 */
 			if (!XGetWindowAttributes(dpy, wins[i], &wa)
 			|| wa.override_redirect || XGetTransientForHint(dpy, wins[i], &d1))
 				continue;
+
+			/* If the window is in a viewable map state or if the window is in an iconic
+			 * state then we manage that window. The iconic state means that the window
+			 * is not visible to the user, but that it can still have representation in
+			 * a bar. In more common words one would say that the window is minimised.
+			 *
+			 * The possible map states are:
+			 *    - IsUnmapped
+			 *    - IsUnviewable and
+			 *    - IsViewable
+			 */
 			if (wa.map_state == IsViewable || getstate(wins[i]) == IconicState)
 				manage(wins[i], &wa);
 		}
+
+		/* This second for loop goes through and handles all the transient windows. */
 		for (i = 0; i < num; i++) { /* now the transients */
+			/* As for normal windows we bail if we can not read the window attributes. */
 			if (!XGetWindowAttributes(dpy, wins[i], &wa))
 				continue;
+
+			/* If the window is transient and in a viewable state, or if it is in iconic
+			 * state, then we manage that window.
+			 *
+			 * Notably a check to see if the window has the override-redirect flag is not
+			 * present here. This is likely an oversight, but transient windows for a
+			 * self-managing window is probably extremely rare. */
 			if (XGetTransientForHint(dpy, wins[i], &d1)
 			&& (wa.map_state == IsViewable || getstate(wins[i]) == IconicState))
 				manage(wins[i], &wa);
 		}
+		/* Data returned by XQueryTree must be freed by the caller. */
 		if (wins)
 			XFree(wins);
 	}
@@ -3554,6 +3948,7 @@ sigchld(int unused)
 /* This starts a new program by executing a given execvp command.
  *
  * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to keybindings
  * @calls fork https://linux.die.net/man/2/fork
  * @calls close https://linux.die.net/man/2/close
  * @calls ConnectionNumber https://linux.die.net/man/3/connectionnumber
@@ -3566,6 +3961,7 @@ sigchld(int unused)
  *
  * Internal call stack:
  *    run -> keypress -> spawn
+ *    run -> buttonpress -> spawn
  */
 void
 spawn(const Arg *arg)
@@ -3746,7 +4142,7 @@ togglebar(const Arg *arg)
  *
  * Internal call stack:
  *    run -> keypress -> togglefloating
- *    run -> keypress -> movemouse / resizemouse -> togglefloating
+ *    run -> buttonpress -> movemouse / resizemouse -> togglefloating
  *    run -> buttonpress -> togglefloating
  */
 void
@@ -3924,7 +4320,8 @@ toggleview(const Arg *arg)
  *    run -> buttonpress / enternotify -> unfocus
  *    run -> maprequest -> manage -> unfocus
  *    run -> keypress -> focusmon -> unfocus
- *    run -> keypress -> tagmon / movemouse / resizemouse -> sendmon -> unfocus
+ *    run -> keypress -> tagmon -> sendmon -> unfocus
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon -> unfocus
  */
 void
 unfocus(Client *c, int setfocus)
