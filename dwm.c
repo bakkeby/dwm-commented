@@ -3285,27 +3285,74 @@ scan(void)
 	}
 }
 
+/* This function handles moving a given client to a designated monitor.
+ *
+ * @called_from tagmon to send the selected client to a monitor in a given direction
+ * @called_from movemouse if the majority of the window is on another monitor after being moved
+ * @called_from resizemouse if the majority of the window is on another monitor after being resized
+ *
+ * Internal call stack:
+ *    run -> keypress -> tagmon -> sendmon
+ *    run -> buttonpress -> movemouse / resizemouse -> sendmon
+ */
 void
 sendmon(Client *c, Monitor *m)
 {
+	/* If the client is already on the target monitor then bail. */
 	if (c->mon == m)
 		return;
+
+	/* Unfocus the client and revert input focus back to the root window before we move the
+	 * client across to the new monitor. */
 	unfocus(c, 1);
+	/* We need to remove the given client from the previous monitor's client list as well as the
+	 * stacking order list before we can move the client. */
 	detach(c);
 	detachstack(c);
+	/* Set the client's monitor to be the target monitor. */
 	c->mon = m;
+	/* The client inherits the tag(s) the target monitor, as in the currently viewed tags on
+	 * that monitor. */
 	c->tags = m->tagset[m->seltags]; /* assign tags of target monitor */
+	/* Add the client to the target monitor's client list. */
 	attach(c);
+	/* Add the client to the target monitor's stacking order list. */
 	attachstack(c);
+
+	/* Apply a general focus to focus on the next client on the current monitor. Note that the
+	 * monitor focus does not follow the client being moved. */
 	focus(NULL);
+	/* Apply a full arrange across all monitors. Logically this is only needed for the target
+	 * monitor and the previous monitor, but that would require more lines of code. */
 	arrange(NULL);
 }
 
+/* This function sets a client window's state.
+ *
+ * The window can be in one of the following states:
+ *
+ *    NormalState     - a normal visible window
+ *    WithdrawnState  - a window that is not visible to the user in any way
+ *    IconicState     - a window that is not visible to the user, but may be represented by an icon
+ *                      in a taskbar as an example - more commonly one would refer to such windows
+ *                      as being minimised
+ *
+ * @called_from manage to set the client's state to normal
+ * @called_from unmanage to set the client's state to withdrawn
+ * @called_from unmapnotify to set the client's state to withdrawn
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage -> setclientstate
+ *    run -> destroynotify / unmapnotify -> unmanage -> setclientstate
+ *    run -> unmapnotify -> setclientstate
+ */
 void
 setclientstate(Client *c, long state)
 {
 	long data[] = { state, None };
 
+	/* This sets the WM_STATE property of the client window to the given state. */
 	XChangeProperty(dpy, c->win, wmatom[WMState], wmatom[WMState], 32,
 		PropModeReplace, (unsigned char *)data, 2);
 }
@@ -3445,18 +3492,69 @@ setfullscreen(Client *c, int fullscreen)
 	}
 }
 
+/* User function to set the layout.
+ *
+ * @called_from keypress in relation to keybindings
+ * @called_from buttonpress in relation to button bindings
+ * @calls strncpy to update the monitor's layout symbol
+ * @calls arrange to reposition and resize clients after the mfact has been changed
+ * @calls drawbar to reposition and resize clients after the mfact has been changed
+ *
+ * Internal call stack:
+ *    run -> keypress -> setlayout
+ *    run -> buttonpress -> setlayout
+ */
 void
 setlayout(const Arg *arg)
 {
+	/* Toggle the selected layout if:
+	 *    - a NULL argument was passed to setlayout or
+	 *    - an argument with value of 0 was passed to setlayout or
+	 *    - if the new layout is different to the previous layout
+	 */
 	if (!arg || !arg->v || arg->v != selmon->lt[selmon->sellt])
 		selmon->sellt ^= 1;
+
+	/* Awkwardly this function expects a valid pointer to a layout to be passed as the
+	 * argument, e.g.
+	 *
+	 *    { MODKEY,                       XK_t,      setlayout,      {.v = &layouts[0]} },
+	 *    { MODKEY,                       XK_f,      setlayout,      {.v = &layouts[1]} },
+	 *    { MODKEY,                       XK_m,      setlayout,      {.v = &layouts[2]} },
+	 *
+	 * The reason for this, as opposed to just passing 0, 1, 2 as the argument, appears to be
+	 * to be able to just revert to the previous layout by passing 0.
+	 *
+	 *    { MODKEY,                       XK_space,  setlayout,      {0} },
+	 *
+	 * The moving to the previous layout is triggered by the !arg->v check above resulting in
+	 * the selmon->sellt variable being toggled, while the below setting of the layout only
+	 * happens if we have a value for arg->v (which we won't have when passing 0).
+	 *
+	 * Passing an invalid pointer as the layout reference will result in dwm crashing.
+	 */
 	if (arg && arg->v)
+		/* This sets the selected montor's selected layout to the layout provided as the
+		 * argument. */
 		selmon->lt[selmon->sellt] = (Layout *)arg->v;
+
+	/* Copy the layout symbol of the given layout into the monitor's layout symbol. This is
+	 * later used when drawing the layout symbol on the bar. */
 	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol, sizeof selmon->ltsymbol);
+
+	/* If there are visible clients on the current monitor then we apply a full arrange to make
+	 * clients resize and reposition according to the new layout. */
 	if (selmon->sel)
 		arrange(selmon);
+	/* If there are no visible clients, however, then we do not need to arrange any clients.
+	 * We just update the bar to show the new layout symbol. */
 	else
 		drawbar(selmon);
+
+	/* As an implementation detail for the above - we might as well have just called arrange
+	 * rather than checking whether we have any selections or not. The arrange call would have
+	 * called arrangemon which would have copied the layout symbol into the monitor and it
+	 * would also have called restack which would have called drawbar. */
 }
 
 /* User function to set or adjust the master / stack factor (or ratio if you wish) for the
