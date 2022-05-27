@@ -93,8 +93,14 @@ struct Client {
 	char name[256];
 	float mina, maxa;
 	int x, y, w, h;
+	/* These variables represent the client's previous size and position and they are maintained
+	 * in the resizeclient function. In practice in a stock dwm they are only used when a
+	 * fullscreen window exits fullscreen. */
 	int oldx, oldy, oldw, oldh;
 	int basew, baseh, incw, inch, maxw, maxh, minw, minh, hintsvalid;
+	/* The old border width is set in the manage function and is used in the unmanage function
+	 * in the event that the window was not destroyed. The setfullscreen function also relies on
+	 * this variable. See comment in the unmanage function. */
 	int bw, oldbw;
 	unsigned int tags;
 	/* oldstate only used for isfloating */
@@ -2617,6 +2623,41 @@ killclient(const Arg *arg)
 	}
 }
 
+/* The manage function is what makes the window manager manage the given window. It determines how
+ * the window is going to be managed based on client rules and various window properties and
+ * states. A managed window is represented by a client, which in turn is added to the client list
+ * and stacking order list for the designated monitor.
+ *
+ * @called_from maprequest to manage new clients
+ * @called_from scan to manage existing windows
+ * @calls XGetTransientForHint https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetTransientForHint.html
+ * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+ * @calls XSetWindowBorder https://tronche.com/gui/x/xlib/window/XSetWindowBorder.html
+ * @calls XSelectInput https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
+ * @calls XRaiseWindow https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
+ * @calls ecalloc to allocate space for the new client
+ * @calls updatetitle to read and store the client's window title
+ * @calls wintoclient to find the parent client for a transient window
+ * @calls applyrules to search for and to apply client rules that matches the client window
+ * @calls configure to propagate the border width
+ * @calls updatewindowtype to apply window type hardcoded rules
+ * @calls updatesizehints to read a client's size hints
+ * @calls updatewmhints to read and proces a client's window management hints
+ * @calls grabbuttons to subscribe to button press events on the window
+ * @calls attach to add the client to the client list
+ * @calls attachstack to add the client to the stacking order list
+ * @calls XChangeProperty https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
+ * @calls XMoveResizeWindow https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
+ * @calls XMapWindow https://tronche.com/gui/x/xlib/window/XMapWindow.html
+ * @calls setclientstate to set the window state to normal
+ * @calls unfocus to unfocus the previously focused client on the current monitor
+ * @calls arrange to resize and reposition clients
+ * @calls focus to give input focus to the new client
+ *
+ * Internal call stack:
+ *    run -> maprequest -> manage
+ *    run -> scan -> manage
+ */
 void
 manage(Window w, XWindowAttributes *wa)
 {
@@ -2624,58 +2665,153 @@ manage(Window w, XWindowAttributes *wa)
 	Window trans = None;
 	XWindowChanges wc;
 
+	/* Allocate memory for the new client. */
 	c = ecalloc(1, sizeof(Client));
+	/* Keep a reference to the window this client represents. This is used in many places. */
 	c->win = w;
-	/* geometry */
+	/* Here we initially use the original position and size of the window as defined by the
+	 * window attributes. Setting the old variables here are mostly just to have them
+	 * initialised. */
 	c->x = c->oldx = wa->x;
 	c->y = c->oldy = wa->y;
 	c->w = c->oldw = wa->width;
 	c->h = c->oldh = wa->height;
+	/* Store the previous border width. Intended to be used to restore the border width when
+	 * unmanaging a client that is not destroyed. */
 	c->oldbw = wa->border_width;
 
+	/* Reads and stores the window title in the client's name variable. */
 	updatetitle(c);
+
+	/* A transient window is intended to be a short lived window that belong to a parent window.
+	 * This could be a dialog box, a popup, a toolbox or a menu to give a few examples.
+	 *
+	 * In dwm transient windows are handled differently to other windows in that:
+	 *    - they inherit the monitor and tags from their parent window and
+	 *    - client rules do not apply to transient windows and
+	 *    - transient windows are always floating
+	 *
+	 * Check if the window is a transient for a parent window, and if so check if this parent
+	 * window (t) is managed by the window manager.
+	 */
 	if (XGetTransientForHint(dpy, w, &trans) && (t = wintoclient(trans))) {
+		/* A transient window inherits the monitor and tags from its parent window. */
 		c->mon = t->mon;
 		c->tags = t->tags;
 	} else {
+		/* Normal windows are opened on the selected monitor by default, but can be moved to
+		 * designated monitors via client rules. */
 		c->mon = selmon;
+		/* Search for matching client rules and apply those to the given client. */
 		applyrules(c);
 	}
 
+	/* All of the below size and position checks only apply in the event that the client is
+	 * floating.
+
+	/* If the client's right hand border exceeds the monitor's right hand border then move
+	 * the client so that it is fully visible. */
 	if (c->x + WIDTH(c) > c->mon->mx + c->mon->mw)
 		c->x = c->mon->mx + c->mon->mw - WIDTH(c);
+	/* If the client's bottom border exceeds the monitor's bottom border then move the client
+	 * so that it is fully visible. */
 	if (c->y + HEIGHT(c) > c->mon->my + c->mon->mh)
 		c->y = c->mon->my + c->mon->mh - HEIGHT(c);
+	/* If the client's left hand border exceeds the monitor's left border then move the client
+	 * so that it is fully visible. */
 	c->x = MAX(c->x, c->mon->mx);
-	/* only fix client y-offset, if the client center might cover the bar */
+	/* Only fix client y-offset, if the client center might cover the bar.
+	 *
+	 * I can only guess as to what the intention of this line is as it does not make much sense.
+	 * The bar can be placed at the top of the screen or at the bottom of the screen as
+	 * controlled by the topbar variable in the configuration file. The comment above might make
+	 * sense if we are talking about having a bottom bar and a window that is placed so far down
+	 * that it covers the bar, but this does something very different.
+	 *
+	 * As for what this line says we have that:
+	 *
+	 *    - ((c->mon->by == c->mon->my) &&
+	 *      if the position is the same as the monitor y position (as in topbar) and
+	 *
+	 *    - (c->x + (c->w / 2) >= c->mon->wx)
+	 *      if the client center on the x axis is within the left hand side of the monitor and
+	 *
+	 *    - (c->x + (c->w / 2) < c->mon->wx + c->mon->ww))
+	 *      if the client center on the x axis is within the right hand side of the monitor
+	 *
+	 *    - then we use bh as the size
+	 *
+	 * We then get either MAX(c->y, bh) or MAX(c->y, c->mon->my). The y-axis is lowest at the
+	 * top and highest at the bottom, so the MAX is only ever going to push a client further
+	 * down. The x-axis has nothing to do with the vertical alignment of a window.
+	 *
+	 * Assuming the condition was correct one would expect the value to be c->mon->my + bh as
+	 * otherwise we are assuming that the monitor's y position is 0.
+	 *
+	 * Possibly a more sensical approach might have been:
+	 *    c->y = MAX(c->y, c->mon->wy);
+	 */
 	c->y = MAX(c->y, ((c->mon->by == c->mon->my) && (c->x + (c->w / 2) >= c->mon->wx)
 		&& (c->x + (c->w / 2) < c->mon->wx + c->mon->ww)) ? bh : c->mon->my);
+
+	/* Set the border width as per config. */
 	c->bw = borderpx;
 
+	/* We are going to propagate the border width back to the window so we set the client's
+	 * new border width in the window changes structure. */
 	wc.border_width = c->bw;
+	/* Now we tell the X server what we want the border width to be. */
 	XConfigureWindow(dpy, w, CWBorderWidth, &wc);
+	/* And we set the border colour */
 	XSetWindowBorder(dpy, w, scheme[SchemeNorm][ColBorder].pixel);
+	/* This sends an event to the window owner informing them about the change(s) made. */
 	configure(c); /* propagates border_width, if size doesn't change */
+	/* This checks if the window is fullscreen and if so then it makes it fullscreen. If the
+	 * window type is dialog then the client is set to be floating. */
 	updatewindowtype(c);
+	/* This reads the size hints for the client, used when resizing windows. */
 	updatesizehints(c);
+	/* This reads window management hints for the client window. In practice it just checks
+	 * whether the window is urgent or not and whether the window expects input focus or not. */
 	updatewmhints(c);
+	/* This tells the X server what events we are interested in receiving for this window. */
 	XSelectInput(dpy, w, EnterWindowMask|FocusChangeMask|PropertyChangeMask|StructureNotifyMask);
+	/* The grabbuttons tells the X server what button press events we are interested in
+	 * receiving notifications for in relation to this window. */
 	grabbuttons(c, 0);
+	/* Transient and fixed windows are forced to be floating. */
 	if (!c->isfloating)
 		c->isfloating = c->oldstate = trans != None || c->isfixed;
+	/* Floating windows are raised to be shown above others. */
 	if (c->isfloating)
 		XRaiseWindow(dpy, c->win);
+	/* Add the client to the client list. New clients are always added at the top of the list
+	 * making them the new master client. */
 	attach(c);
+	/* Add the client to the stacking order list. New additions are always added at the top of
+	 * the list to indicate order in which clients had focus. */
 	attachstack(c);
+	/* We update the _NET_CLIENT_LIST property of the root window appending this new window. */
 	XChangeProperty(dpy, root, netatom[NetClientList], XA_WINDOW, 32, PropModeAppend,
 		(unsigned char *) &(c->win), 1);
+	/* Basically this moves the window two times the screen width to the right. Why some windows
+	 * might require this, and which windows for that matter, is not clear. */
 	XMoveResizeWindow(dpy, c->win, c->x + 2 * sw, c->y, c->w, c->h); /* some windows require this */
+	/* Set the client state to normal state (it may have been in iconic or withdrawn state). */
 	setclientstate(c, NormalState);
+	/* If the client was added on the current monitor then chances are that it is also shown.
+	 * As such we unfocus the selected client. */
 	if (c->mon == selmon)
 		unfocus(selmon->sel, 0);
+	/* The new client is assumed to be the selected client on the client's monitor. */
 	c->mon->sel = c;
+	/* An arrange to resize and reposition clients in the event that this new client is shown. */
 	arrange(c->mon);
+	/* The window is ready to be made visible to the user. We fulfill the map request for the
+	 * window by mapping it. */
 	XMapWindow(dpy, c->win);
+	/* Finally a focus to give input focus to the next client in line (will be the new client,
+	 * if shown, otherwise it will likely be the previously selected client). */
 	focus(NULL);
 }
 
@@ -4879,6 +5015,12 @@ unmanage(Client *c, int destroyed)
 	 * unmanage is called from the destroynotify function.
 	 */
 	if (!destroyed) {
+		/* In principle this is intended to set the client's border width back to what it was
+		 * before dwm started managing it. This can be deduced by that in the manage function
+		 * we set c->oldbw to the border width of the original window attributes. There is no
+		 * guarantee, however, that the c->oldbw will still hold this value as the
+		 * setfullscreen function relies on the same variable to store the client's border
+		 * width before going into fullscreen. */
 		wc.border_width = c->oldbw;
 		/* This disables processing of requests and close downs on all other connections than
 		 * the one this request arrived on. */
