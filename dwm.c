@@ -2845,6 +2845,24 @@ motionnotify(XEvent *e)
 	mon = m;
 }
 
+/* User function to move a (floating) window around using the mouse.
+ *
+ * @called_from buttonpress in relation to button bindings
+ * @calls XGrabPointer https://tronche.com/gui/x/xlib/input/XGrabPointer.html
+ * @calls XUngrabPointer https://tronche.com/gui/x/xlib/input/XUngrabPointer.html
+ * @calls XMaskEvent https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XMaskEvent.html
+ * @calls restack to place the selected client above other floating windows if floating
+ * @calls getrootptr to find the mouse pointer coordinates
+ * @calls togglefloating to make a tiled window snap out to become floating
+ * @calls resize to move the window to the new position
+ * @calls recttomon to work out what monitor the client is on after having been moved
+ * @calls sendmon to send the client to the other monitor if the client's monitor has changed
+ * @calls focus to give input focus after having moved the client to another monitor
+ * @see https://tronche.com/gui/x/xlib/events/processing-overview.html
+ *
+ * Internal call stack:
+ *    run -> buttonpress -> movemouse
+ */
 void
 movemouse(const Arg *arg)
 {
@@ -2854,53 +2872,139 @@ movemouse(const Arg *arg)
 	XEvent ev;
 	Time lasttime = 0;
 
+	/* If there is no selected client then there is nothing to do here. This is merely a
+	 * safeguard in the event the function is called / used incorrectly. Under normal
+	 * circumstances this should never happen. Note that this statement also sets the variable
+	 * c to be the selected client. */
 	if (!(c = selmon->sel))
 		return;
+
+	/* If the client is in fullscreen then we bail as we do not want the mouse move or resize
+	 * functionality interfering with fullscreen windows. */
 	if (c->isfullscreen) /* no support moving fullscreen windows by mouse */
 		return;
+
+	/* The only legitimate reason for a call to restack here is to place the selected client
+	 * above other floating windows before we start moving it around. */
 	restack(selmon);
+
+	/* We store the original client x and y position. This is used below to calculate the new
+	 * client coordinates based on the position of the mouse cursor and how far the mouse has
+	 * been moved. */
 	ocx = c->x;
 	ocy = c->y;
+
+	/* Here we grab the mouse pointer to tell the X server that we are interested in receiving
+	 * events related to the mouse, in particular MotionNotify events. We also change the cursor
+	 * to indicate that we are performing a window move operation. If we were not able to grab
+	 * the pointer for whatever reason then we bail. */
 	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
 		None, cursor[CurMove]->cursor, CurrentTime) != GrabSuccess)
 		return;
+
+	/* Here we ask for the mouse pointer coordinates and store these in the integer variables of
+	 * x and y. */
 	if (!getrootptr(&x, &y))
 		return;
+
+	/* Keep doing this until the button is released. */
 	do {
+		/* Consider that we have received a ButtonPress event, which results in the run
+		 * function calling the buttonpress function that handles the event, which in turn
+		 * calls movemouse and we get down to this code. This will block dwm from processing
+		 * any events for as long as the user moves the window around. An example of this is
+		 * that the bar will stop updating while the user has this function active.
+		 *
+		 * Because of this both the movemouse and resizemouse functions hook into the event
+		 * queue to look for MotionNotify events, but they also subscribe to a few other
+		 * types of events so as to not block everything while the window is moved around.
+		 *
+		 * The below code handles MotionNotify events, but forwards ConfigureRequest, Expose
+		 * and MapRequest events to their respective event handlers.
+		 *
+		 * The XMaskEvent call asks for the next event whose type falls under the given event
+		 * masks.
+		 */
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
+
 		switch(ev.type) {
 		case ConfigureRequest:
 		case Expose:
 		case MapRequest:
+			/* Events for the above event types are forwarded to their respective event
+			 * handler function. */
 			handler[ev.type](&ev);
 			break;
 		case MotionNotify:
+			/* Motion notify events can come in quick, very quick in fact, so we skip
+			 * events received between certain intervals.
+			 *
+			 * The (1000 / 60) means that we want to process 60 events per second. This
+			 * corresponds to processing one event per 16.66 milliseconds.
+			 *
+			 * The value is a good middle-ground in terms of performance on older systems
+			 * and responsiveness. Some people may find that the interaction is not
+			 * entirely smooth and they can try increasing this to process 120 events per
+			 * second (1000 / 120) which means one event every 8.33 milliseconds.
+			 */
 			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
 				continue;
-			lasttime = ev.xmotion.time;
+			lasttime = ev.xmotion.time; /* Store the previous time for comparison above */
 
+			/* Here we calculate the new x and y coordinates which are the original
+			 * coordinates plus the relative distance that the mouse cursor has moved. */
 			nx = ocx + (ev.xmotion.x - x);
 			ny = ocy + (ev.xmotion.y - y);
+
+			/* The snap pixel, which is 32 as per default configuration, controls how far
+			 * the window must be from the window area border until it snaps against that
+			 * border.
+			 *
+			 * This checks whether the new position is close to the left border, and if
+			 * so then we snap to that border. */
 			if (abs(selmon->wx - nx) < snap)
 				nx = selmon->wx;
+			/* This checks whether the new position is close to the right hand border of
+			 * the window area, and if so then we snap to that border. */
 			else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) < snap)
 				nx = selmon->wx + selmon->ww - WIDTH(c);
+			/* This checks whether the new position is close to the top border of the
+			 * window area, and if so then we snap to that border. */
 			if (abs(selmon->wy - ny) < snap)
 				ny = selmon->wy;
+			/* This checks whether the new position is close to the bottom border of the
+			 * window area, and if so then we snap to that border. */
 			else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) < snap)
 				ny = selmon->wy + selmon->wh - HEIGHT(c);
+
+			/* If the window is tiled (and we are not using floating layout), and we have
+			 * moved the cursor more than snap (32) pixels, then we "snap" the client out
+			 * of tiled state and make it floating (by calling togglefloating). */
 			if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
 			&& (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
 				togglefloating(NULL);
+
+			/* We only actually move the window if we are in floating layout or the window
+			 * is actually floating. This has to do with that we may be dealing with a
+			 * tiled window that has not yet snapped out to become floating (as per the
+			 * above code). */
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, nx, ny, c->w, c->h, 1);
 			break;
 		}
 	} while (ev.type != ButtonRelease);
+
+	/* We no longer need to be spammed about mouse movement so we ungrab the mouse pointer.
+	 * Other programs may need it. */
 	XUngrabPointer(dpy, CurrentTime);
+
+	/* The call to recttomon checks if the client position after having moved it places it on
+	 * another monitor, and if so then we call sendmon to make sure that the client is handed
+	 * over to that monitor for arrangement purposes. */
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);
 		selmon = m;
+		/* A general focus to give input focus after changing monitor. */
 		focus(NULL);
 	}
 }
@@ -3154,6 +3258,25 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	XSync(dpy, False);
 }
 
+/* User function to resize a (floating) window using the mouse.
+ *
+ * @called_from buttonpress in relation to button bindings
+ * @calls XGrabPointer https://tronche.com/gui/x/xlib/input/XGrabPointer.html
+ * @calls XUngrabPointer https://tronche.com/gui/x/xlib/input/XUngrabPointer.html
+ * @calls XWarpPointer https://tronche.com/gui/x/xlib/input/XWarpPointer.html
+ * @calls XMaskEvent https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XMaskEvent.html
+ * @calls XCheckMaskEvent https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XCheckMaskEvent.html
+ * @calls restack to place the selected client above other floating windows if floating
+ * @calls togglefloating to make a tiled window snap out to become floating
+ * @calls resize to change the size of the window while respecting size hints
+ * @calls recttomon to work out what monitor the client is on after having been resized
+ * @calls sendmon to send the client to the other monitor if the client's monitor has changed
+ * @calls focus to give input focus after having moved the client to another monitor
+ * @see https://tronche.com/gui/x/xlib/events/processing-overview.html
+ *
+ * Internal call stack:
+ *    run -> buttonpress -> resizemouse
+ */
 void
 resizemouse(const Arg *arg)
 {
@@ -3163,50 +3286,139 @@ resizemouse(const Arg *arg)
 	XEvent ev;
 	Time lasttime = 0;
 
+	/* If there is no selected client then there is nothing to do here. This is merely a
+	 * safeguard in the event the function is called / used incorrectly. Under normal
+	 * circumstances this should never happen. Note that this statement also sets the variable
+	 * c to be the selected client. */
 	if (!(c = selmon->sel))
 		return;
+
+	/* If the client is in fullscreen then we bail as we do not want the mouse move or resize
+	 * functionality interfering with fullscreen windows. */
 	if (c->isfullscreen) /* no support resizing fullscreen windows by mouse */
 		return;
+
+	/* The only legitimate reason for a call to restack here is to place the selected client
+	 * above other floating windows before we start resizing it. */
 	restack(selmon);
+
+	/* We store the original client x and y position. This is used below to restrict the size
+	 * of the window preventing it from becoming negative. */
 	ocx = c->x;
 	ocy = c->y;
+
+	/* Here we grab the mouse pointer to tell the X server that we are interested in receiving
+	 * events related to the mouse, in particular MotionNotify events. We also change the cursor
+	 * to indicate that we are performing a window resize operation. If we were not able to grab
+	 * the pointer for whatever reason then we bail. */
 	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
 		None, cursor[CurResize]->cursor, CurrentTime) != GrabSuccess)
 		return;
+
+	/* Here we move the mouse cursor to the bottom right corner of the window. This is known to
+	 * cause issues on some setups where the transformation matrix for the mouse has been
+	 * changed using xinput. */
 	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
+
+	/* Keep doing this until the button is released. */
 	do {
+		/* Consider that we have received a ButtonPress event, which results in the run
+		 * function calling the buttonpress function that handles the event, which in turn
+		 * calls resizemouse and we get down to this code. This will block dwm from
+		 * processing any events for as long as the user resizes the window. An example of
+		 * this is that the bar will stop updating while the user has this function active.
+		 *
+		 * Because of this both the movemouse and resizemouse functions hook into the event
+		 * queue to look for MotionNotify events, but they also subscribe to a few other
+		 * types of events so as to not block everything while the window being resized.
+		 *
+		 * The below code handles MotionNotify events, but forwards ConfigureRequest, Expose
+		 * and MapRequest events to their respective event handlers.
+		 *
+		 * The XMaskEvent call asks for the next event whose type falls under the given event
+		 * masks.
+		 */
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
+
 		switch(ev.type) {
 		case ConfigureRequest:
 		case Expose:
 		case MapRequest:
+			/* Events for the above event types are forwarded to their respective event
+			 * handler function. */
 			handler[ev.type](&ev);
 			break;
 		case MotionNotify:
+			/* Motion notify events can come in quick, very quick in fact, so we skip
+			 * events received between certain intervals.
+			 *
+			 * The (1000 / 60) means that we want to process 60 events per second. This
+			 * corresponds to processing one event per 16.66 milliseconds.
+			 *
+			 * The value is a good middle-ground in terms of performance on older systems
+			 * and responsiveness. Some people may find that the interaction is not
+			 * entirely smooth and they can try increasing this to process 120 events per
+			 * second (1000 / 120) which means one event every 8.33 milliseconds.
+			 */
 			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
 				continue;
-			lasttime = ev.xmotion.time;
+			lasttime = ev.xmotion.time; /* Store the previous time for comparison above */
 
+			/* This calculates the new width based on the coordinates of the window and
+			 * the distance that the mouse cursor has moved. The MAX is a guard to prevent
+			 * the size to become negative should the mouse cursor be moved past the
+			 * position of the client. */
 			nw = MAX(ev.xmotion.x - ocx - 2 * c->bw + 1, 1);
 			nh = MAX(ev.xmotion.y - ocy - 2 * c->bw + 1, 1);
+
+			/* This if statement guards against unreasonable sizes. In practice it
+			 * validates that the new size is within the position and size of the selected
+			 * monitor in order to allow a tiled client to snap out and become floating. */
 			if (c->mon->wx + nw >= selmon->wx && c->mon->wx + nw <= selmon->wx + selmon->ww
 			&& c->mon->wy + nh >= selmon->wy && c->mon->wy + nh <= selmon->wy + selmon->wh)
 			{
+				/* If the client is tiled and we are not using the floating layout,
+				 * then check if we have changed the size more than snap (32) pixels
+				 * before we make the client snap out of tiled state and become
+				 * floating. We let togglefoating handle the transition. */
 				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
 				&& (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
 					togglefloating(NULL);
 			}
+
+			/* We only actually resize the window if we are in floating layout or the
+			 * window is actually floating. This has to do with that we may be dealing
+			 * with a tiled window that has not yet snapped out to become floating (as
+			 * per the above code). */
 			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
 				resize(c, c->x, c->y, nw, nh, 1);
 			break;
 		}
 	} while (ev.type != ButtonRelease);
+
+	/* We warp the cursor again to be at the bottom left of the window. In principle it should
+	 * already be there, but depending on size hints it may not be. This is just correcting in
+	 * case it is not. */
 	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
+
+	/* We no longer need to be spammed about mouse movement so we ungrab the mouse pointer.
+	 * Other programs may need it. */
 	XUngrabPointer(dpy, CurrentTime);
+
+	/* This seemingly benign line of code is actually very important. What this does is that
+	 * it checks the X event queue if there are any EnterNotify events waiting as a result
+	 * of the resize action above and simply swallows (ignores) them. This avoids situations
+	 * where two overlapping windows begin to flicker back and forth due to competing and
+	 * continuously generated EnterNotify events. */
 	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev));
+
+	/* The call to recttomon checks if the client position and size is more on another monitor
+	 * after we have resized it, and if so then we call sendmon to make sure that the client is
+	 * handed over to that monitor for arrangement purposes. */
 	if ((m = recttomon(c->x, c->y, c->w, c->h)) != selmon) {
 		sendmon(c, m);
 		selmon = m;
+		/* A general focus to give input focus after changing monitor. */
 		focus(NULL);
 	}
 }
@@ -3284,7 +3496,7 @@ restack(Monitor *m)
 	 * it checks the X event queue if there are any EnterNotify events waiting as a result
 	 * of the change in stacking order above and simply swallows (ignores) them. This avoids
 	 * situations where two overlapping windows begin to flicker back and forth due to competing
-	 * and continously generated EnterNotify events. */
+	 * and continuously generated EnterNotify events. */
 	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev));
 }
 
