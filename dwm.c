@@ -1644,56 +1644,234 @@ dirtomon(int dir)
 	return m;
 }
 
+/* This function handles the drawing of the bar.
+ *
+ * The logic that is applied here with regards to what is drawn must be accurately reflected in the
+ * buttonpress function which works out what the user clicked on by going through the same logical
+ * steps without drawing anything.
+ *
+ * @called from drawbars to update the bars on all monitors
+ * @called from expose if the bar window is exposed (damaged)
+ * @called from propertynotify if the selected client's title changes
+ * @called from restack for convenience
+ * @called from setlayout to update the bar after layout update
+ * @called from updatestatus to update the bar after status update
+ * @calls drw_setscheme to set the next colour scheme
+ * @calls drw_text to draw text on the bar
+ * @calls drw_rect to draw the client indicator on tags and the floating indicator for the title
+ * @calls drw_map to place the finished drawing on the bar window
+ *
+ * Internal call stack:
+ *    ~ -> arrange -> restack -> drawbar
+ *    ~ -> focus -> drawbars -> drawbar
+ *    run -> buttonpress -> restack -> drawbar
+ *    run -> buttonpress -> movemouse / resizemouse -> restack -> drawbar
+ *    run -> buttonpress -> setlayout -> drawbar
+ *    run -> expose -> drawbar
+ *    run -> keypress -> focusstack -> restack -> drawbar
+ *    run -> keypress -> setlayout -> drawbar
+ *    run -> setup -> updatestatus -> drawbar
+ *    run -> propertynotify -> drawbars -> drawbar
+ *    run -> propertynotify -> drawbar
+ *    run -> propertynotify -> updatestatus -> drawbar
+ */
 void
 drawbar(Monitor *m)
 {
+	/* Variables:
+	 *    x - holds the x position within the bar window
+	 *    w - holds temporary width values when drawing the bar
+	 *    tw - short for text width, holds the status text width
+	 *    i - common iterator
+	 *    occ - bitmask that holds occupied tags
+	 *    urg - bitmask that holds tags with clients that have the urgent flag set
+	 *
+	 * Then we have two variables in relation to the indicator used for occupied tags and for
+	 * floating windows, which is a small square (i.e. a box).
+	 *    boxs - this represents the box offset in terms of the x and y axis, it determines the
+	 *           distance between the box and the top of the bar as well as the distance between
+	 *           the box and the start of the tag. What the s stand for is not obvious.
+	 *           Speculation but possibly this might be short for "box start".
+	 *    boxw - this represents the box size in terms of the height and width, it determines
+	 *           how big the box is. What the w stand for is not obvious here either, but one
+	 *           can assume that it is short for "box width".
+	 */
 	int x, w, tw = 0;
 	int boxs = drw->fonts->h / 9;
 	int boxw = drw->fonts->h / 6 + 2;
 	unsigned int i, occ = 0, urg = 0;
 	Client *c;
 
+	/* If the bar is not shown then don't spend any effort drawing the bar. As such hiding the
+	 * bar has a positive effect on performance. */
 	if (!m->showbar)
 		return;
 
-	/* draw status first so it can be overdrawn by tags later */
+	/* Draw status first so it can be overdrawn by tags later. The main reason for this is that
+	 * we want as much of the status shown as possible and it is just easier to draw the status
+	 * first and let other things like tags overwrite it if necessary compared to having to
+	 * calculate how much we can fit at a later time. */
 	if (m == selmon) { /* status is only drawn on selected monitor */
+		/* Set the normal colour scheme before drawing the text. This affects the foreground
+		 * and background colour of the status text. */
 		drw_setscheme(drw, scheme[SchemeNorm]);
+		/* Calculate the width of the status text. The TEXTW macro includes lrpad by default
+		 * and we do not want to include that here, we just want to know the size of the
+		 * text. We also do not want the status crammed all the way to the edge of the bar,
+		 * so we add 2 pixels worth of padding that will be added on the right hand side due
+		 * to the position we start drawing the text from. */
 		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
+
+		/* The below handles the actual drawing of the status text, the position calculated
+		 * by subtracting the text width from the monitor's window width.
+		 *
+		 * There is more writeup on the drw_text function in drw.c, but since this is the
+		 * first time we this in dwm.c let's have a quick breakdown.
+		 *
+		 *    drw_text(
+		 *       drw,        - the drawable
+		 *       m->ww - tw, - the x position
+		 *       0,          - the y position
+		 *       tw,         - the width
+		 *       bh,         - the height
+		 *       0,          - left padding (typically lrpad / 2)
+		 *       stext,      - the text to be drawn
+		 *       0           - inverted (swaps foreground and background colours)
+		 *    );
+		 *
+		 * Notable here is the omission of an lrpad value and this has specifically to do
+		 * with that we subtracted that from the text width. Another thing that may not be
+		 * obvious to someone new to this is that we do not include the monitor position when
+		 * passing the x and y values. This has to do with that the position is relative to
+		 * the bar window and not the bar window's location.
+		 */
 		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
 	}
 
+	/* This loops through all clients on the monitor and derives two bitmask variables
+	 * indicating what tags are occupied by clients and what tags are occupied by urgent
+	 * clients. */
 	for (c = m->clients; c; c = c->next) {
+		/* The or-equals operator means the union of occ and c->tags, it is short for
+		 *    occ = occ | c->tags;
+		 */
 		occ |= c->tags;
+		/* We do the same for urgent clients. */
 		if (c->isurgent)
 			urg |= c->tags;
 	}
+
+	/* This could have been initialised earlier to save on a single line of code, but as it
+	 * stands it clearly indicates that here we start to draw from the beginning of the bar.
+	 * This is a clarification following the above where we started drawing the status on the
+	 * opposite side of the bar. */
 	x = 0;
+	/* We start by looping through all tags. */
 	for (i = 0; i < LENGTH(tags); i++) {
+		/* The user can define their own tag symbols (or text) so the width of each tag can
+		 * differ from tag to tag. */
 		w = TEXTW(tags[i]);
+
+		/* Here we set the colour scheme to use when drawing the tag text. The gist of it is
+		 * that we use SchemeSel if the tag is being viewed and SchemeNorm otherwise.
+		 *
+		 *    m->tagset[m->seltags] - this is the bitmask representing the viewed tags
+		 *    1 << i                - this represents the bitmask for the tag we are
+		 *                            currently processing
+		 *    m->tags... & 1 << i   - the intersection between the two binaries will be true
+		 *                            if the current tag is viewed
+		 *
+		 * After which we end up with either:
+		 *
+		 *    drw_setscheme(drw, scheme[SchemeSel]);
+		 * or
+		 *    drw_setscheme(drw, scheme[SchemeNorm]);
+		 */
 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
+
+		/* Draw the tag text (tags[i]). Note the last argument which inverts the colours of
+		 * the tag if it is occupied by an urgent client. Invert in this context means to
+		 * swap the foreground and background colours when drawing the text.
+		 *
+		 *    urg          - this is the bitmask representing tags with urgent clients
+		 *    1 << i       - this represents the bitmask for the tag we are currently
+		 *                   processing
+		 *    urg & 1 << i - the intersection between the two binaries will be true if the
+		 *                   current tag has urgent clients
+		 */
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
+
+		/* If the current tag is occupied by clients then draw the small indicator box. */
 		if (occ & 1 << i)
+			/* This draws a rectangle using boxs as an offset on the x and y axis and
+			 * boxw as both the height and width.
+			 *
+			 * The last value urg & 1 << i indicates whether to use the background (1) or
+			 * foreground (0) colour for the rectangle.
+			 *
+			 * The second to last value indicates whether the rectangle is filled / solid.
+			 *
+			 *    m == selmon && selmon->sel && selmon->sel->tags & 1 << i
+			 *
+			 * This is a mouthful but what this says is:
+			 *
+			 *    m == selmon &&             - if this is the selected monitor and
+			 *    selmon->sel &&             - that monitor has a selected client and
+			 *    selmon->sel->tags & 1 << i - that client is on the current tag
+			 *                               = then fill the tag
+			 *
+			 * In more simple words you could say that the bar will show a solid box
+			 * indicator for all tags where the currently focused client resides.
+			 */
 			drw_rect(drw, x + boxs, boxs, boxw, boxw,
 				m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
 				urg & 1 << i);
+		/* We are done drawing, move our draw "cursor" to the next tag. */
 		x += w;
 	}
+	/* This sets the width of the layout symbol. The blw variable short for bar layout width
+	 * and the value is used in the buttonpress function when working out whether a click on
+	 * the bar involved the layout symbol or not. The width is captured at the time when the
+	 * bar is drawn as in principle the layout symbol of the monitor may have been changed by
+	 * the time the user clicked on the bar. */
 	w = blw = TEXTW(m->ltsymbol);
+	/* Reset the colour scheme back to normal. */
 	drw_setscheme(drw, scheme[SchemeNorm]);
+	/* Just draw the layout symbol. Note how the drw_text function returns how far the cursor
+	 * moved while drawing the text. */
 	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
 
+	/* This checks if there is any space left to draw the window title (while setting w to the
+	 * remaining width at the same time). */
 	if ((w = m->ww - tw - x) > bh) {
+		/* If we have a selected client then show that client's window title. */
 		if (m->sel) {
+			/* Set the colour scheme to SchemeSel, but only if this is the selected
+			 * monitor. */
 			drw_setscheme(drw, scheme[m == selmon ? SchemeSel : SchemeNorm]);
+			/* Just draw the window title. */
 			drw_text(drw, x, 0, w, bh, lrpad / 2, m->sel->name, 0);
+			/* If the selected client is floating then draw an indicator similar to that
+			 * of tags. This will be a box of the same size and position that always uses
+			 * the foreground colour and will be solid only in the event that the client
+			 * is fixed in size (has the same minimum and maximum size hints). */
 			if (m->sel->isfloating)
 				drw_rect(drw, x + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
+		/* If we do not have any clients then draw a blank space to clear anything that may
+		 * have been drawn before (e.g. status text or a previous window title). */
 		} else {
+			/* Quite strictly the used colour scheme is still SchemeNorm as we set it
+			 * before drawing the layout symbol, but we set it again to make it clear what
+			 * colour scheme we expect this to have. */
 			drw_setscheme(drw, scheme[SchemeNorm]);
+			/* Here we draw a rectangle in the area where the window title would normally
+			 * have been drawn. Note the explicit filled value of 1 a we want a solid
+			 * block and the last inverted value of 1 which means we want the darker
+			 * background colour. */
 			drw_rect(drw, x, 0, w, bh, 1, 1);
 		}
 	}
+	/* Finally place our finished drawing on the bar window by mapping it. */
 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
 }
 
