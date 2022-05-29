@@ -19,6 +19,8 @@
  * Keys and tagging rules are organized as arrays and defined in config.h.
  *
  * To understand everything else, start reading main().
+ *
+ * @see https://www.cl.cam.ac.uk/~mgk25/ucs/icccm.pdf
  */
 #include <errno.h>
 #include <locale.h>
@@ -478,16 +480,50 @@ applyrules(Client *c)
 	c->tags = c->tags & TAGMASK ? c->tags & TAGMASK : c->mon->tagset[c->mon->seltags];
 }
 
+/* This function assesses whether a resize for a window is needed or not considering the window's
+ * size hints which adds restrictions on the window's size or how the window is sized.
+ *
+ * @called_from resize to apply a window's size hints for given dimensions before resizing
+ * @calls updatesizehints to read the size hints of a window
+ *
+ * Internal call stack:
+ *    ~ -> resize -> applysizehints
+ */
 int
 applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 {
+	/* It is worth nothing here that the x, y, w, and h parameters are pointers to the variables
+	 * that the resize function passes as references. This is because this function manipulates
+	 * those values directly. This is also why every use of these variables in this function
+	 * has the pointer (*) prefix, e.g. *w.
+	 *
+	 * If the parameters were normal int variables then the arguments would be passed by value,
+	 * meaning that applysizehints would get copies of said values leaving the variables in the
+	 * calling resize function untouched. */
+
+	/* Variable used to indicate whether the window is at its minimum size. */
 	int baseismin;
 	Monitor *m = c->mon;
 
-	/* set minimum possible */
+	/* A window's height and width must be at least 1 pixel, this is merely a safeguard for
+	 * values of 0 or below being passed. */
 	*w = MAX(1, *w);
 	*h = MAX(1, *h);
+
+	/* Here we make a distinction between whether the resize is being done by the system or
+	 * interactively by the user.
+	 *
+	 * The practical difference is that resizes done by the system must leave the window within
+	 * the monitor's window area, while we allow the window to be moved freely within the
+	 * available screen area.
+	 */
 	if (interact) {
+		/* When the user interacts with a window this checks whether a window is placed
+		 * outside of the screen area and restricts how far outside the window can go.
+		 * It can be thought of a safeguard to prevent floating windows from becoming
+		 * unreachable. The screen height and width naturally reflect a rectangle and the
+		 * below does not attempt to prevent windows ending up out of view in Xinerama setups
+		 * where the monitors have different heights and widths. */
 		if (*x > sw)
 			*x = sw - WIDTH(c);
 		if (*y > sh)
@@ -497,6 +533,12 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 		if (*y + *h + 2 * c->bw < 0)
 			*y = 0;
 	} else {
+		/* When clients are resized by the system in relation to automatic tiling or
+		 * otherwise then we restrict the position to be at least partially within the
+		 * designated monitor's window area (as in where the windows are tiled, which is the
+		 * monitor space less the bar window). In principle these are merely safeguards to
+		 * prevent a window from appearing at an unreachable space outside of the window
+		 * area. */
 		if (*x >= m->wx + m->ww)
 			*x = m->wx + m->ww - WIDTH(c);
 		if (*y >= m->wy + m->wh)
@@ -506,43 +548,147 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 		if (*y + *h + 2 * c->bw <= m->wy)
 			*y = m->wy;
 	}
+
+	/* This arbitrarily restricts the minimum horizontal and vertical size of a window to be
+	 * that of the bar height. */
 	if (*h < bh)
 		*h = bh;
 	if (*w < bh)
 		*w = bh;
+
+	/* Now it comes to actually comparing the window's size hints with the new size.
+	 * By default we always respect size hints for floating windows, and as such we will enter
+	 * the if statement here if the client is floating or we are in floating layout. The
+	 * exception to this is tiled windows where we can optionally choose to respect size hints
+	 * for tiled windows by leave the resizehints setting in the configuration file as 1, or we
+	 * can set that to 0 to explicitly ignore the size hints for tiled clients. */
 	if (resizehints || c->isfloating || !c->mon->lt[c->mon->sellt]->arrange) {
+		/* We may have received a property notification about changes to size hints since the
+		 * last time we resized this client, in which case we will need to get the new hints
+		 * before proceeding. */
 		if (!c->hintsvalid)
 			updatesizehints(c);
-		/* see last two sentences in ICCCM 4.1.2.3 */
+
+		/* See last two sentences in ICCCM 4.1.2.3 which relates to the WM_NORMAL_HINTS
+		 * property.
+		 *
+		 * Ref. https://www.cl.cam.ac.uk/~mgk25/ucs/icccm.pdf we have that:
+		 *
+		 *    The min_aspect and max_aspect fields are fractions with the numerator first and
+		 *    the denominator second, and they allow a client to specify the range of aspect
+		 *    ratios it prefers. Window managers that honor aspect ratios should take into
+		 *    account the base size in determining the preferred window size. If a base size
+		 *    is provided along with the aspect ratio fields, the base size should be
+		 *    subtracted from the window size prior to checking that the aspect ratio falls
+		 *    in range. If a base size is not provided, nothing should be subtracted from the
+		 *    window size. (The minimum size is not to be used in place of the base size for
+		 *    this purpose.)
+		 *
+		 * In simpler terms if the size hints provided both a base size and aspect ratio
+		 * hints, then the aspect ratio calculations should be made without taking the base
+		 * size into account.
+		 *
+		 * The same documentation also says that if the base width and height are missing
+		 * then one should assume the minimum size and we do so in the updatesizehints
+		 * function. But as per the above documentation the minimum size is not to be used
+		 * in place of the base size for the purpose of calculating the aspect ratio.
+		 *
+		 * As such here we check if the base size is the same as the minimum size, in which
+		 * case we assume that the base size was not provided as such but that we derived it
+		 * from the minimum size hints. */
 		baseismin = c->basew == c->minw && c->baseh == c->minh;
+
+		/* As per the notes from ICCCM 4.1.2.3 we remove the base size from the new height
+		 * and width before doing the aspect ratio calculations, unless the base size hints
+		 * were not provided. */
 		if (!baseismin) { /* temporarily remove base dimensions */
 			*w -= c->basew;
 			*h -= c->baseh;
 		}
-		/* adjust for aspect limits */
+
+		/* Here we adjust the width and height based on the aspect ratio limits. First we
+		 * check whether we have aspect ratio restrictions. */
 		if (c->mina > 0 && c->maxa > 0) {
+			/* We only correct either the width or the height. If the width is fine in
+			 * terms of the aspect ratio then we move on to check the height.
+			 *
+			 * Possibly the logic here is intuitive, but if you are wondering why we swap
+			 * from w / h to h / w between checking the minimum and maximum aspect ratios
+			 * then that has to do with how we set mina and maxa in the first place in the
+			 * updatesizehints function:
+			 *
+			 *    	c->mina = (float)size.min_aspect.y / size.min_aspect.x;
+			 *    	c->maxa = (float)size.max_aspect.x / size.max_aspect.y;
+			 */
 			if (c->maxa < (float)*w / *h)
 				*w = *h * c->maxa + 0.5;
 			else if (c->mina < (float)*h / *w)
 				*h = *w * c->mina + 0.5;
 		}
+
+		/* Some applications only allow the size to be changed in certain increments. A good
+		 * example of this is the Simple Terminal emulator (st) which has size hints that
+		 * only allow increments of line height on the y axis and column width on the x axis.
+		 * The reason for this is so that st can draw whole lines / columns with the given
+		 * size. Resizing a stock st window using the mouse can give a jagged look and feel.
+		 *
+		 * Refer to these additional details from ICCCM 4.1.2.3.
+		 *
+		 *    The min_width and min_height elements specify the minimum size that the window
+		 *    can be for the client to be useful. The max_width and max_height elements
+		 *    specify the maximum size. The base_width and base_height elements in
+		 *    conjunction with width_inc and height_inc define an arithmetic progression of
+		 *    preferred window widths and heights for nonnegative integers i and j:
+		 *
+		 *       width = base_width + (i × width_inc)
+		 *       height = base_height + (j × height_inc)
+		 *
+		 *    Window managers are encouraged to use i and j instead of width and height in
+		 *    reporting window sizes to users. If a base size is not provided, the minimum
+		 *    size is to be used in its place and vice versa.
+		 *
+		 * What this means is that before check for and take size increments into account we
+		 * need to remove the base size from the height and width values.
+		 */
 		if (baseismin) { /* increment calculation requires this */
 			*w -= c->basew;
 			*h -= c->baseh;
 		}
-		/* adjust for increment value */
+
+
+		/* Below we check if there are incremental width and height restrictions, and if so
+		 * then we make sure that the size is a multiple of said increment by deducting the
+		 * remainder. */
 		if (c->incw)
 			*w -= *w % c->incw;
 		if (c->inch)
 			*h -= *h % c->inch;
-		/* restore base dimensions */
+
+		/* Restore base dimensions.
+		 *
+		 * Here we make sure that the window size is not less than the minimum size.
+		 * The reason for adding the base size to the width and height is because regardless
+		 * of whether the baseismin variable is true or not we will have removed the base
+		 * size from the height or width in relation to checking aspect ratio or in relation
+		 * to checking size increments. */
 		*w = MAX(*w + c->basew, c->minw);
 		*h = MAX(*h + c->baseh, c->minh);
+
+		/* Finally we check if the client is still within the maximum size (if specified),
+		 * and if it is not then we reduce the size to be the maximum. */
 		if (c->maxw)
 			*w = MIN(*w, c->maxw);
 		if (c->maxh)
 			*h = MIN(*h, c->maxh);
 	}
+
+	/* Here we check whether the size and position has changed after applying size hints before
+	 * returning. This tells the resize function whether we need to go ahead with the resizing
+	 * the window or not.
+	 *
+	 * Again the st example with incremental size hints demonstrates this nicely in that as long
+	 * as the mouse cursor doesn't move far enough to add (or remove) another row or column then
+	 * there is no need for a resize. */
 	return *x != c->x || *y != c->y || *w != c->w || *h != c->h;
 }
 
@@ -3501,9 +3647,9 @@ recttomon(int x, int y, int w, int h)
  * The interact flag indicates whether the resize is due to the user manually interacting with the
  * window or if it is due to automated processes like tiling arrangements. The difference has to
  * do with the boundaries that are imposed; if the user is manually resizing or moving the window
- * then they can freely move that window half-way between two monitors, but if the resize is not
- * interactive then the resize placement and size is restricted to the monitor window area. Refer
- * to the applysizehints function for more details.
+ * then they can freely move that window in the available screen space, but if the resize is not
+ * interactive then the placement is restricted to be, at least partially, within the monitor's
+ * window area. Refer to the applysizehints function for more details.
  *
  * @called_from monocle for tiling purposes
  * @called_from movemouse to change position of the client window
@@ -3523,6 +3669,11 @@ recttomon(int x, int y, int w, int h)
 void
 resize(Client *c, int x, int y, int w, int h, int interact)
 {
+	/* Note how the above variables are passed by reference to applysizehints. This is because
+	 * that function manipulates the variables before we pass them on to resizeclient (provided
+	 * that a resize is deemed necessary). If these were not passed by reference then they would
+	 * be passed by value which means that applysizehints would receive copies of said values
+	 * leaving the variables here unaltered. */
 	if (applysizehints(c, &x, &y, &w, &h, interact))
 		resizeclient(c, x, y, w, h);
 }
@@ -4891,32 +5042,152 @@ tagmon(const Arg *arg)
 	sendmon(selmon->sel, dirtomon(arg->i));
 }
 
+/* This is what handles the tile layout arrangement.
+ *
+ * @called_from arrangemon
+ * @calls nexttiled to get the next tiled client
+ * @calls resize to change the size and position of client windows
+ *
+ * Internal call stack:
+ *    ~ -> arrange -> arrangemon -> tile
+ */
 void
 tile(Monitor *m)
 {
+	/* Variables:
+	 *    i - iterator, represents number of clients processed
+	 *    n - total number of clients
+	 *    h - calculated client height
+	 *    mw - calculated monitor width
+	 *    my - calculated master area y position relative to the window area
+	 *    ty - calculated stack area y position relative to window area (tile y, the naming is
+	 *         likely a remnant from a time before the nmaster patch was applied upstream -
+	 *         before that the master area had only one client and the remaining clients would
+	 *         be tiled in the tile area)
+	 */
 	unsigned int i, n, h, mw, my, ty;
 	Client *c;
 
+	/* This loop just counts the number of tiled clients storing the count in the variable n. */
 	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++);
+	/* If we have no tiled clients then there is nothing to do, stop processing now. */
 	if (n == 0)
 		return;
 
+	/* The general idea here is that we have a master area where the master client(s) are tiled
+	 * and a stack area where the remaining clients are tiled.
+	 *
+	 * The number of clients in the master area is controlled using nmaster.
+	 *
+	 * In principle the code below is not that complicated, but something that does make it a
+	 * bit convoluted are the two exceptional cases where:
+	 *    - nmaster is 0, in which case only the stack area is drawn and
+	 *    - nmaster is greater than n, in which case only the master area is drawn
+	 */
+
+	/* If we have enough clients for both the master and the stack area then we split the
+	 * window area in two by applying the master stack factor (mfact). */
 	if (n > m->nmaster)
+		/* But in the exceptional case that nmaster is 0 then we also set the master area
+		 * width to 0. This because all the clients will be drawn in the stack area, and
+		 * the stack area subtracts mw from the available width. */
 		mw = m->nmaster ? m->ww * m->mfact : 0;
 	else
+		/* If we have less clients than nmaster then all clients will be drawn in the
+		 * master area and thus the master area takes up the entire window area. */
 		mw = m->ww;
+
+	/* This loops through all clients initialising i, the master y (my), and the stack y (ty)
+	 * to 0 while incrementing i for each client processed. */
 	for (i = my = ty = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
+		/* If this client goes into the master area (this includes the case where all
+		 * clients go into the master area). */
 		if (i < m->nmaster) {
+			/* Here we calculate the height of the client based on the remaining space
+			 * and the number of clients left to place.
+			 *
+			 *    (m->wh - my)        - the remaining space
+			 *    MIN(n, m->nmaster)  - this covers for the exceptional case where
+			 *                          nmaster is greater than the number of clients,
+			 *                          imagine if nmaster is 8 and we have 6 clients
+			 *    (MIN(...) - i)      - the number of remaining clients
+			 *
+			 * Putting this together we have that the height h is the remaining space
+			 * divided by the remaining clients.
+			 */
 			h = (m->wh - my) / (MIN(n, m->nmaster) - i);
+
+			/* This resizes and positions the client accordingly.
+			 *
+			 *    m->wx          - the window area x position
+			 *    m->wy + my     - the window area y position + master client y position
+			 *    mw - (2*c->bw) - the width of the client, defined earlier to be either
+			 *                     the entire width of the monitor window area or the
+			 *                     width of the master area after mfact has been
+			 *                     applied, we subtract the border width from the size
+			 *    h - (2*c->bw)  - the calculated height of the client, we subtract the
+			 *                     border width from the size
+			 *    0              - this resize is not the result of the user interacting
+			 *                     with the window
+			 */
 			resize(c, m->wx, m->wy + my, mw - (2*c->bw), h - (2*c->bw), 0);
+
+			/* We increment the master y position with the height of the client after
+			 * the resize so that we know where the next client can be positioned.
+			 *
+			 * The if statement is a guard to prevent the my variable growing larger
+			 * than the window area height, in which case the height calculation above
+			 * would result in a negative value - and a negative value for an unsigned
+			 * int results in a really really big number causing a crash. */
 			if (my + HEIGHT(c) < m->wh)
 				my += HEIGHT(c);
+		/* Otherwise the client goes into the stack area (this includes the case where
+		 * nmaster is 0 and all clients go into the stack area). */
 		} else {
+			/* Here we calculate the height of the client based on the remaining space
+			 * and the number of clients left to place.
+			 *
+			 *    (m->wh - ty)        - the remaining space
+			 *    (n - i)             - the number of remaining clients
+			 */
 			h = (m->wh - ty) / (n - i);
+
+			/* This resizes and positions the client accordingly.
+			 *
+			 *    m->wx + mw     - the window area x position + master width gives the
+			 *                     stack area x position (mw can be 0)
+			 *    m->wy + ty     - the window area y position + stack client y position
+			 *    m->ww - mw     - the width of the client in the stack area is the
+			 *      - (2*c->bw)    remaining space after master width has been deducted,
+			 *                     we subtract the border width from the size
+			 *    h - (2*c->bw)  - the calculated height of the client, we subtract the
+			 *                     border width from the size
+			 *    0              - this resize is not the result of the user interacting
+			 *                     with the window
+			 */
 			resize(c, m->wx + mw, m->wy + ty, m->ww - mw - (2*c->bw), h - (2*c->bw), 0);
+
+			/* We increment the stack y position with the height of the client after
+			 * the resize so that we know where the next client can be positioned. */
 			if (ty + HEIGHT(c) < m->wh)
 				ty += HEIGHT(c);
 		}
+
+	/* Now following that how come the implementation is so complicated in that it continuously
+	 * calculates the remaining space for each client? Why does it not just simply divide the
+	 * available space by the number of clients and leave it at that?
+	 *
+	 * The reason for why it is implemented in this way has specifically to do with size hints
+	 * in that a client like the simple terminal (st) for example would not be able to utilise
+	 * all the space given. By default size hints are respected in tiled resizals, and by
+	 * calculating the size one client at a time and only incrementing by the size that was
+	 * used after size hints has been applied the space usage is more or less optimised.
+	 * Another thing to consider is that no matter how you divide the available space there
+	 * will always be the case where some divisions will give remainder pixels that are not
+	 * allocated. The way windows are tiled here the last client to be tiled in each respective
+	 * area will receive the remaining space. This is why the bottom client in the stack area
+	 * often appears larger than the rest.
+	 */
 }
 
 /* User function to toggle the display on and off on the selected monitor.
@@ -5660,6 +5931,7 @@ updatenumlockmask(void)
  *
  * @called_by applysizehints
  * @calls XGetWMNormalHints https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XGetWMNormalHints.html
+ * @see https://tronche.com/gui/x/icccm/sec-4.html#s-4.1.2.3
  *
  * Internal call stack:
  *    run -> maprequest -> manage -> updatesizehints
@@ -5736,14 +6008,14 @@ updatesizehints(Client *c)
 	 * unfortunate for a tiling window manager, hence windows that are marked as fixed are
 	 * always going to be floating. */
 	c->isfixed = (c->maxw && c->maxh && c->maxw == c->minw && c->maxh == c->minh);
-	/* You may think of hintsvalid as a flag that indicates whether size hints need to be
+	/* One may think of hintsvalid as a flag that indicates whether size hints need to be
 	 * updated or not. Here we set that to 1 to indicate that size hints are now up to date. */
 	c->hintsvalid = 1;
 }
 
 /* This updates the status text by reading the WM_NAME property of the root window.
  *
- * You can test this by running xsetroot like this:
+ * One can test this by running xsetroot like this:
  *    $ xsetroot -name "status text"
  *
  * @called_from setup to initialise stext and trigger the initial drawing of the bar
@@ -5792,7 +6064,7 @@ updatetitle(Client *c)
 	 *    $ xprop | grep _NET_WM_NAME
 	 *    _NET_WM_NAME(UTF8_STRING) = "~"
 	 *
-	 * You can set a new title for a window using xdotool, but note that many applications
+	 * One can set a new title for a window using xdotool, but note that many applications
 	 * tend to manage the window title on their own and as such may overwrite what you set
 	 * using external tools like this.
 	 *
