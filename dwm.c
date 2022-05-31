@@ -1798,7 +1798,7 @@ configurerequest(XEvent *e)
  * The monitor's position and size are set in the updategeom function which handles monitor setup.
  *
  * @called_from updategeom to create new monitors
- * @calls ecalloc to allocate memory for the new structure
+ * @calls ecalloc to allocate memory for the new structure (see util.c)
  * @calls strncpy to copy the default layout symbol into the monitor layout symbol
  *
  * Internal call stack:
@@ -3192,7 +3192,7 @@ killclient(const Arg *arg)
  * @calls XSetWindowBorder https://tronche.com/gui/x/xlib/window/XSetWindowBorder.html
  * @calls XSelectInput https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
  * @calls XRaiseWindow https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
- * @calls ecalloc to allocate space for the new client
+ * @calls ecalloc to allocate space for the new client (see util.c)
  * @calls updatetitle to read and store the client's window title
  * @calls wintoclient to find the parent client for a transient window
  * @calls applyrules to search for and to apply client rules that matches the client window
@@ -4739,7 +4739,7 @@ setmfact(const Arg *arg)
  * @calls DisplayWidth https://linux.die.net/man/3/displaywidth
  * @calls DisplayHeight https://linux.die.net/man/3/displayheight
  * @calls RootWindow https://linux.die.net/man/3/rootwindow
- * @calls ecalloc to allocate space for the colour schemes
+ * @calls ecalloc to allocate space for the colour schemes (see util.c)
  * @calls drw_create to create the drawable (see drw.c)
  * @calls drw_fontset_create to create the font set (see drw.c)
  * @calls drw_cur_create to create cursors (see drw.c)
@@ -5937,7 +5937,7 @@ updateclientlist()
  * @calls XineramaIsActive https://linux.die.net/man/3/xineramaisactive
  * @calls XineramaQueryScreens https://linux.die.net/man/3/xineramaqueryscreens
  * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
- * @calls ecalloc to allocate space to hold unique screen info
+ * @calls ecalloc to allocate space to hold unique screen info (see util.c)
  * @calls memcpy to copy screen info
  * @calls isuniquegeom to check for duplicate screen info
  * @calls createmon to set up new monitors
