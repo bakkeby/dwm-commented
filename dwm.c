@@ -47,6 +47,10 @@
 #include "util.h"
 
 /* macros */
+
+/* The BUTTONMASK macro is used as part of the MOUSEMASK macro and is directly used in the
+ * grabbuttons function. It indicates that we are interested in receiving events when a mouse
+ * button is pressed and when it is released when we click on a window. */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
 /* The CLEANMASK macro removes Num Lock mask and Lock mask from a given bit mask.
  * Refer to the numlockmask variable comment for more details on the Num Lock mask.
@@ -56,24 +60,79 @@
  * See the writeup in the recttomon function for more information on this. */
 #define INTERSECT(x,y,w,h,m)    (MAX(0, MIN((x)+(w),(m)->wx+(m)->ww) - MAX((x),(m)->wx)) \
                                * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
+/* This macro returns true if any of the given client's tags is on any of the tags currently being
+ * viewed on the monitor. */
 #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
+/* This calculates the number of items of an array. */
 #define LENGTH(X)               (sizeof X / sizeof X[0])
+/* The MOUSEMASK macro is used in the movemouse and resizemouse user functions and it indicates
+ * that we are interested in receiving events when the mouse cursor moves in addition to when the
+ * mouse button is pressed and released. */
 #define MOUSEMASK               (BUTTONMASK|PointerMotionMask)
+/* The actual width of a client window includes the border and this macro helps calculate that. */
 #define WIDTH(X)                ((X)->w + 2 * (X)->bw)
+/* The actual height of a client window includes the border and this macro helps calculate that. */
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
+/* The TAGMASK macro gives a binary value that represents a valid bitmask according to how many
+ * tags are defined.
+ *
+ * As an example dwm by default comes with nine tags and the bitmask is a 32 bit integer. In this
+ * case the TAGMASK macro would return a binary value like this:
+ *
+ *    00000000000000000000000111111111
+ *
+ * but if the configuration was changed so that there are icons defined for four tags then the
+ * TAGMASK macro would return a binary value like this:
+ *
+ *    00000000000000000000000000001111
+ *
+ * The TAGMASK is used in various places to restrict and to validate bitmask values used in the
+ * context of what tags are viewed by the monitor and what tags are assigned to a client.
+ */
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
+/* The TEXTW macro returns the width of a given text string plus the left and right padding.
+ *
+ * Due to that not all fonts have every glyph and we have a primary font and fallback fonts this
+ * macro calls drw_fontset_getwidth which does the exact same thing as when text is drawn, just
+ * that it returns how far the cursor has moved rather than actually drawing the text. */
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 
-/* enums */
+/* Enumerators (enums) are user defined data types in C. They are mainly used to assign names to
+ * integral constants to make a program easier to read and maintain.
+ *
+ * As an example the below cursor enum would result in CurNormal having a value of 0, CurResize
+ * having a value of 1 and CurMove having a value of 2. Often an additional constant is added to
+ * an enum representing the last of the given type, e.g. CurLast having a value of 3.
+ *
+ * The last value is commonly used when needing to looping through the various options / constants.
+ * It is possible to specify the value of each constant, but this is not used here.
+ */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
+/* If you need to add your own colour schemes then this is where you would add them. */
 enum { SchemeNorm, SchemeSel }; /* color schemes */
+/* This represents the various extended window manager hint atoms that dwm supports. */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
+/* This represents various window manager hint atoms that dwm supports. */
 enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
+/* This represents the various click options that can be used when defining mouse button press
+ * bindings in the buttons array in the configuration file. */
 enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle,
        ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
 
+/* In C a struct(ure) can be thought of as a user defined data type. They define how much space is
+ * needed to allocate memory to hold values for each of the variables inside the structure.
+ *
+ * While arrays allow for variables that can hold several data types of the same kind to be
+ * defined, a structure allows for data items of different kinds to be defined.
+ *
+ * A union is conceptually similar to structures, with the difference being that of memory
+ * allocation. In a structure each variable (also referred to as a member) has allocated space
+ * whereas in a union all the variables share the same memory. The Arg type that are passed to
+ * user functions is a union which means that the argument can be an integer, an unsigned integer,
+ * a float value or a pointer, but the argument can only hold a single value.
+ */
 typedef union {
 	int i;
 	unsigned int ui;
@@ -81,6 +140,16 @@ typedef union {
 	const void *v;
 } Arg;
 
+/* The definition of a button, used in the configuration file when setting up mouse button
+ * bindings.
+ *
+ * static Button buttons[] = {
+ *    // click                event mask      button          function        argument
+ *    { ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
+ *    { ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
+ *    ...
+ * };
+ */
 typedef struct {
 	unsigned int click;
 	unsigned int mask;
@@ -89,30 +158,91 @@ typedef struct {
 	const Arg arg;
 } Button;
 
+/* Here we are declaring that we are going to have a struct called Monitor without going into
+ * details of what exactly this struct looks like. This is because the Client struct refers to
+ * the current monitor, while the monitor is going to have a list of clients. We define these
+ * structs alphabetically thus the Client is defined before the Monitor. */
 typedef struct Monitor Monitor;
 typedef struct Client Client;
+
+/* The Client struct represents a window that is managed by the window manager. */
 struct Client {
+	/* The name holds the window title. */
 	char name[256];
+	/* The mina and maxa represents the minimum and maximum aspect ratios as per size hints. */
 	float mina, maxa;
+	/* The client x, y coordinates and size (width, height). */
 	int x, y, w, h;
 	/* These variables represent the client's previous size and position and they are maintained
 	 * in the resizeclient function. In practice in a stock dwm they are only used when a
 	 * fullscreen window exits fullscreen. */
 	int oldx, oldy, oldw, oldh;
+	/* These variables are all in relation to size hints.
+	 *    basew - base width
+	 *    baseh - base height
+	 *    incw - width increment
+	 *    inch - height increment
+	 *    minw - minimum width
+	 *    minh - minimum height
+	 *    maxw - maximum width
+	 *    maxh - maximum height
+	 *    hintsvalid - flag indicating whether size hints need to be refreshed
+	 */
 	int basew, baseh, incw, inch, maxw, maxh, minw, minh, hintsvalid;
-	/* The old border width is set in the manage function and is used in the unmanage function
-	 * in the event that the window was not destroyed. The setfullscreen function also relies on
-	 * this variable. See comment in the unmanage function. */
+	/* Border width (bw) and old border width. The old border width is set in the manage
+	 * function and is used in the unmanage function in the event that the window was not
+	 * destroyed. The setfullscreen function also relies on this variable. See comment in the
+	 * unmanage function. */
 	int bw, oldbw;
+	/* This represents the tags the client is shown on. This is a bitmask where each bit
+	 * represents whether the client is shown on that tag.
+	 *
+	 * As an example consider the hexadecimal value of 0x51 (decimal 81) which has a binary
+	 * value of:
+	 *    001010001  - bitmask
+	 *    987654321  - tags
+	 *
+	 * This would mean that the client is shown on tags 1, 5 and 7.
+	 */
 	unsigned int tags;
-	/* oldstate only used for isfloating */
+	/* Various status flags.
+	 *    isfixed      - means that the client is fixed in size due to minimum and maximum size
+	 *                   hints being the same value
+	 *    isfloating   - indicates whether the client is floating or not
+	 *    isurgent     - indicates whether the client is urgent or not
+	 *    neverfocus   - some windows do not want the window manager to give them input focus as
+	 *                   they are mere passive windows that do not handle any input, the
+	 *                   neverfocus indicates that the client should never receive input focus
+	 *                   as indicated by the window manager hints for the window
+	 *                   (see updatewmhints and setfocus functions)
+	 *    oldstate     - represents the previous state in the event that the client goes into
+	 *                   fullscreen, the variable is only used to indicate whether the client
+	 *                   was floating or not
+	 *    isfullscreen - indicates whether the window is in fullscreen
+	 */
 	int isfixed, isfloating, isurgent, neverfocus, oldstate, isfullscreen;
+	/* The next client in the client list, which is a linked list. The client list controls the
+	 * order in which clients are tiled. */
 	Client *next;
+	/* The next client in the stacking order list, which is also a linked list. The stacking
+	 * order indicates which window is on top of others as well as the order in which clients
+	 * had focus. */
 	Client *snext;
+	/* The monitor this client belongs to. */
 	Monitor *mon;
+	/* The managed window that this client represents. */
 	Window win;
 };
 
+/* The definition of a key, used in the configuration file when setting up key bindings.
+ *
+ * static Key keys[] = {
+ *    // modifier                     key        function        argument
+ *    { MODKEY,                       XK_d,      incnmaster,     {.i = -1 } },
+ *    { MODKEY,                       XK_h,      setmfact,       {.f = -0.05} },
+ *    ...
+ * };
+ */
 typedef struct {
 	unsigned int mod;
 	KeySym keysym;
@@ -120,32 +250,135 @@ typedef struct {
 	const Arg arg;
 } Key;
 
+/* The definition of a layout, used in the configuration file when setting up layouts.
+ *
+ * static const Layout layouts[] = {
+ * 	// symbol     arrange function
+ * 	{ "[]=",      tile },    // first entry is default
+ * 	{ "><>",      NULL },    // no layout function means floating behavior
+ * 	{ "[M]",      monocle },
+ * };
+ */
 typedef struct {
 	const char *symbol;
 	void (*arrange)(Monitor *);
 } Layout;
 
+/* This represents individual monitors (screens) if Xinerama is used, or a single monitor
+ * representing the entire screen space if Xinerama is not enabled. */
 struct Monitor {
+	/* This holds the layout symbol text, typically as defined in the layouts array. This is
+	 * used when drawing the layout symbol on the bar. The reason why this is defined for the
+	 * monitor rather than simply using the layout symbol as defined in the layouts array is
+	 * that some layouts, like the monocle layout for example, may alter the layout symbol
+	 * depending on how many clients are present. */
 	char ltsymbol[16];
+	/* The master / stack factor which controls how big a proportion of the window tiling area
+	 * is reserved for the master area compared to the stack area. The default value is
+	 * configured in the configuration file and the value is adjusted via the setmfact function.
+	 * The value has a range from 0.05 to 0.95. */
 	float mfact;
+	/* This represents the number of clients that are to be tiled in the master area. This has
+	 * no upper limit but cannot be less than 0. The default value is configured in the
+	 * configuration file and the value is adjusted via the incnmaster function. */
 	int nmaster;
+	/* This represents the monitor number, or the monitor index if you wish. */
 	int num;
+	/* The by variable defines the bar windows position on the y axis and this is set in the
+	 * updatebarpos function. */
 	int by;               /* bar geometry */
+	/* These variables represents the position and dimensions of the monitor.
+	 *    mx - monitor position on the x-axis
+	 *    my - monitor position on the y-axis
+	 *    mw - the monitor's width
+	 *    mh - the monitor's height
+	 */
 	int mx, my, mw, mh;   /* screen size */
+	/* These variables represents the position and dimensions of the window area, as in the part
+	 * of the monitor where windows are tiled. This is the the space of the monitor less the
+	 * bar window and these are set in the updatebarpos function.
+	 *    wx - window area position on the x-axis
+	 *    wy - window area position on the y-axis
+	 *    ww - the window area's width
+	 *    wh - the window area's height
+	 */
 	int wx, wy, ww, wh;   /* window area  */
+	/* The seltags variable is either 0 or 1 and represents the currently selected tagset.
+	 *
+	 * This allows for a clever mechanism where one can easily flip between the current and
+	 * previous tagset by simply flipping the value of seltags:
+	 *
+	 *    selmon->seltags ^= 1;
+	 *
+	 * For this reason when referring to the selected tags for a monitor you will often find
+	 * these kind of patterns:
+	 *
+	 *    m->tagset[m->seltags]
+	 *    selmon->tagset[selmon->seltags]
+	 *    c->mon->tagset[c->mon->seltags]
+	 *
+	 * In principle this could just have been defined as two variables for the monitor.
+	 *
+	 *    m->tags
+	 *    m->prevtags
+	 *
+	 * which would make the above patterns slightly easier to read, i.e.
+	 *
+	 *    m->tags
+	 *    selmon->tags
+	 *    c->mon->tags
+	 *
+	 * The benefit of using this mechanism, however, is that we save on a single line of code
+	 * in the view function when the argument is 0 and we toggle back to the previous view.
+	 */
 	unsigned int seltags;
+	/* The sellt variable is either 0 or 1 and represents the currently selected layout. This
+	 * follows the same mechanism as seltags above giving patterns such a:
+	 *
+	 *    m->lt[m->sellt]
+	 *    selmon->lt[selmon->sellt]
+	 *    c->mon->lt[c->mon->sellt]
+	 */
 	unsigned int sellt;
+	/* This array holds the previously and currently viewed tags for the monitor, the index of
+	 * which is indicated by the seltags variable. */
 	unsigned int tagset[2];
+	/* Internal flag indicating whether the bar is shown or not. */
 	int showbar;
+	/* Internal flag indicating whether the bar is shown at the top or at the bottom. */
 	int topbar;
+	/* The client list. This represents the start of a linked list of clients which determines
+	 * the order in which clients are tiled. */
 	Client *clients;
+	/* This represents the monitor's selected client. */
 	Client *sel;
+	/* The stacking order list. This represents the order in which client windows are stacked on
+	 * top of each other, as well as the order in which clients had last focus. */
 	Client *stack;
+	/* Monitors are also managed as a linked list with the mons variable referring to the first
+	 * monitor. The next variable on the monitor refers to the next monitor in the list. */
 	Monitor *next;
+	/* This is the bar window which is used to draw the bar. Each monitor has their own bar. */
 	Window barwin;
+	/* This array holds the previous and current layout for the monitor, the index of which is
+	 * indicated by the sellt variable. */
 	const Layout *lt[2];
 };
 
+/* The definition of a rule, used in the configuration file when setting up client rules.
+ *
+ * static const Rule rules[] = {
+ *    // xprop(1):
+ *    //    WM_CLASS(STRING) = instance, class
+ *    //    WM_NAME(STRING) = title
+ *    //
+ *    // class      instance    title       tags mask     isfloating   monitor
+ *    { "Gimp",     NULL,       NULL,       0,            1,           -1 },
+ *    { "Firefox",  NULL,       NULL,       1 << 8,       0,           -1 },
+ * };
+ *
+ * See the applyrules function for how the rules are applied.
+ */
 typedef struct {
 	const char *class;
 	const char *instance;
