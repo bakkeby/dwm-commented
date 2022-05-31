@@ -1,5 +1,7 @@
 *.o
 *.sh
 *.txt
+*.out
 dwm
 config.h
+transient
