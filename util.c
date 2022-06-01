@@ -4,11 +4,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The util library comes from libsl which contains some functionality that is common for several
+ * suckless project, e.g. dmenu and dwm.
+ *
+ * @see https://git.suckless.org/libsl/files.html
+ */
+
 #include "util.h"
 
 /* Memory allocation wrapper around calloc that calls die in the event that memory could not be
  * allocated.
  *
+ * @called_from drw_cur_create to allocate memory for a cursor
+ * @called_from drw_scm_create to allocate memory for the colour scheme
+ * @called_from drw_create to allocate memory for the drawable
  * @called_from setup to allocate memory for colour schemes
  * @called_from updategeom to allocate memory to hold unique screen info
  * @called_from createmon to allocate memory for new Monitor structures
@@ -17,6 +26,10 @@
  * @calls die in the event that memory could not be allocated
  *
  * Internal call stack:
+ *    main -> setup -> drw_cur_create -> ecalloc
+ *    main -> setup -> drw_fontset_create -> xfont_create -> ecalloc
+ *    main -> setup -> drw_scm_create -> ecalloc
+ *    main -> setup -> drw_create -> ecalloc
  *    main -> setup -> ecalloc
  *    main -> setup -> updategeom -> ecalloc
  *    main -> setup -> updategeom -> createmon -> ecalloc
@@ -52,16 +65,21 @@ ecalloc(size_t nmemb, size_t size)
  * @see https://www.tutorialspoint.com/c_standard_library/c_macro_va_start.htm
  *
  * Internal call stack:
+ *    main -> setup -> drw_fontset_create -> xfont_create
+ *    main -> setup -> drw_scm_create -> drw_clr_create -> die
  *    main -> setup -> ecalloc -> die
  *    main -> setup -> updategeom -> ecalloc -> die
  *    main -> setup -> updategeom -> createmon -> ecalloc -> die
  *    main -> setup -> sigchld -> die
  *    main -> die
+ *    run -> buttonpress -> drw_fontset_getwidth -> drw_text -> die
  *    run -> configurenotify -> updategeom -> ecalloc -> die
  *    run -> configurenotify -> updategeom -> createmon -> ecalloc -> die
  *    run -> maprequest -> manage -> ecalloc -> die
  *    run -> scan -> manage -> ecalloc -> die
  *    xerrorstart -> die
+ *    ~ -> drawbar -> drw_text -> die
+ *    ~ -> drawbar -> drw_fontset_getwidth -> drw_text -> die
  */
 void
 die(const char *fmt, ...) {

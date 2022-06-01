@@ -3264,7 +3264,7 @@ manage(Window w, XWindowAttributes *wa)
 	}
 
 	/* All of the below size and position checks only apply in the event that the client is
-	 * floating.
+	 * floating. */
 
 	/* If the client's right hand border exceeds the monitor's right hand border then move
 	 * the client so that it is fully visible. */
@@ -4770,7 +4770,7 @@ setup(void)
 
 	/* Initialise the screen.
 	 *
-	 * The DefaultScreen macro returns the default scren number. The screen number is used
+	 * The DefaultScreen macro returns the default screen number. The screen number is used
 	 * to retrieve the height and width of the screen as well as the root window.
 	 *
 	 * The screen number is also used to find the default depth and visual when creating the

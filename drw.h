@@ -1,28 +1,54 @@
 /* See LICENSE file for copyright and license details. */
 
+/* This is an internal structure that holds a single cursor. */
 typedef struct {
 	Cursor cursor;
 } Cur;
 
+/* This is an internal structure that represents a font. */
 typedef struct Fnt {
+	/* The display. */
 	Display *dpy;
+	/* The font height. */
 	unsigned int h;
+	/* The actual font. */
 	XftFont *xfont;
+	/* The fontconfig pattern, used when searching for fonts. */
 	FcPattern *pattern;
+	/* The next font in the linked list. */
 	struct Fnt *next;
 } Fnt;
 
+/* This represents the columns for colour schemes.
+ *
+ * E.g. as defined in the dwm configuration file:
+ *
+ *    static const char *colors[][3]      = {
+ *       //               fg         bg         border
+ *       [SchemeNorm] = { col_gray3, col_gray1, col_gray2 },
+ *       [SchemeSel]  = { col_gray4, col_cyan,  col_cyan  },
+ *    };
+ */
 enum { ColFg, ColBg, ColBorder }; /* Clr scheme index */
 typedef XftColor Clr;
 
+/* This is an internal structure representing the drawable, used when drawing the bar. */
 typedef struct {
+	/* The width and height of the drawable. */
 	unsigned int w, h;
+	/* The display. */
 	Display *dpy;
+	/* The screen as returned by DefaultScreen for the given display. */
 	int screen;
+	/* The root window. */
 	Window root;
+	/* The drawable pixel map. */
 	Drawable drawable;
+	/* The graphics context that handles colours. */
 	GC gc;
+	/* The currently used colour scheme. */
 	Clr *scheme;
+	/* A linked list of loaded fonts. */
 	Fnt *fonts;
 } Drw;
 
