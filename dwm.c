@@ -18,9 +18,437 @@
  *
  * Keys and tagging rules are organized as arrays and defined in config.h.
  *
- * To understand everything else, start reading main().
+ * Some general concepts and terminology:
+ *
+ *    X
+ *       The X Window System (X11, or simply X) is a windowing system for bitmap displays and is
+ *       common on Unix-like operating systems. This provides the basic framework for a GUI
+ *       environment and it handles the drawing and moving of windows as well as the interaction
+ *       with a mouse and keyboard.
+ *
+ *    Xlib
+ *       An X Window System protocol client library written in C containing functions for
+ *       interacting with an X server.
+ *
+ *    Window
+ *       A window is the graphical representation of a program. This is what you see and interact
+ *       with when using your computer.
+ *
+ *    Window Manager
+ *       A window manager is a program that is responsible for controlling the placement and
+ *       appearance of windows within a windowing system. It can be part of a desktop environment
+ *       or be used on its own.
+ *
+ *    Desktop Environment
+ *       A desktop environment bundles together a variety of components to provide common graphical
+ *       user interface elements such as icons, toolbars, wallpapers, and desktop widgets.
+ *       Additionally, most desktop environments include a set of integrated applications and
+ *       utilities.
+ *
+ *       Typically desktop environments provide their own window manager and come with a built-in
+ *       compositor for handling transparency and special effects when moving or switching between
+ *       windows.
+ *
+ *    Screen
+ *       This can refer to a physical display, but in the context of dwm this can also refer to the
+ *       visible screen space that is covered by the root window. This spans all physical monitors.
+ *
+ *    Monitor
+ *       In the context of dwm the Monitor represents the drawable area of the screen and holds
+ *       properties such as the size and position of the screen as well as per-monitor settings
+ *       such as the selected layout, the position of the bar as well as a list of the clients
+ *       that are assigned to the given monitor.
+ *
+ *    Client
+ *       In the context of dwm the Client represents a window that is managed by the window
+ *       manager. The client holds a series of properties such as the size and position of the
+ *       window, various size restrictions, miscellaneous flags indicating state as well as
+ *       references to other clients within the same workspace.
+ *
+ *       A set of clients is represented in form of a linked list, which means that one client has
+ *       a reference to the next, and so on.
+ *
+ *    Layout
+ *       In the context of dwm a Layout controls how clients are arranged (tiled) respective to
+ *       other visible clients.
+ *
+ *       Most layouts have a larger "master" area where the main window(s) of interest reside and
+ *       one or more "stack" areas where the remaining windows are placed.
+ *
+ *       Floating clients stay on top of tiled clients and remain in their floating position
+ *       regardless of how other clients are tiled.
+ *
+ *    Workspace
+ *       In the context of window managers in general a workspace is what holds (or owns) a window
+ *       or a set of windows. Conceptually dwm has one workspace per monitor and controls what
+ *       clients are shown on that workspace through the use of tags. Each workspace can have a
+ *       different layout.
+ *
+ *       That dwm has workspaces generally goes unsaid due to the workspace being embedded into the
+ *       monitor making it transparent to the user. If in doubt then note how the Monitor struct
+ *       holds information that is unrelated to the screen space it occupies, as in it is used for
+ *       more than one thing.
+ *
+ *       For the sake of consistency we will be referring to the monitor rather than the workspace
+ *       for all upcoming text.
+ *
+ *    Tags
+ *       In the context of dwm the visibility of clients are handled through the use of tags. In
+ *       dwm the number of tags is user defined but limited to be between 1 and 32 tags. The number
+ *       of tags will be the same on all monitors, but are controlled separately from monitor to
+ *       monitor.
+ *
+ *       Multiple tags can can be viewed at the same time on a monitor, and a client can be shown
+ *       on multiple tags.
+ *
+ *       The famous pertag patch for dwm enables a separate layout (and other options) to be set on
+ *       a per tag basis. It works by keeping a record of what layout etc. is used on each
+ *       individual tag. When you switch to another tag the settings for that tag is copied across
+ *       to the Monitor. This creates a form of hybrid between workspaces and tags while taking
+ *       away from the purity and concept behind tags.
+ *
+ *    View
+ *       In the context of dwm a view is the presentation of clients on a per-monitor basis.
+ *
+ *    Bar
+ *       The bar in dwm shows what tags are being viewed, what layout is used, the name of the
+ *       selected client (if any) and a plain text status that will default to "dwm-<version>".
+ *
+ *    EWMH
+ *       The Extended Window Manager Hints is an X Window System standard for communication between
+ *       window managers and the windows they manage. These standards formulate protocols for the
+ *       mediation of access to shared X resources. Communication occurs via X properties and
+ *       client messages. The EWMH is a comprehensive set of protocols to implement a desktop
+ *       environment.
+ *
+ *       dwm only supports a handful of EWMH properties and client messages out of the box.
+ *
+ *    The event loop
+ *       In X everything is event driven. What this means is that when you click on a window then
+ *       that will generate an event that is propagated back to the window manager via the X server.
+ *
+ *       The window manager tells the X server what types of events it is interested in receiving
+ *       as well as what form of button or key presses the window manager is listening for.
+ *
+ *       When a window wants to go into fullscreen then it sends a client message event indicating
+ *       its desire to go into fullscreen. When you move a mouse cursor over a window then the
+ *       window manager will receive a notification that the mouse cursor crossed over from one
+ *       window to another. When a new window is created the window manager will receive an event
+ *       to that effect, the same goes when a window is closed.
+ *
+ *       When you hit the keybinding to focus on the next client then that will result in a key
+ *       press event because the window manager told the X server that it was interested in getting
+ *       such an event when the user hit MOD+k. When handling that event the window manager works
+ *       out that it is associated with the focusstack function and calls that accordingly. When
+ *       that action is complete it falls back to looking for new events to process.
+ *
+ *       Once dwm hits the run function every action or operation that the window manager does
+ *       after that is reacting to events received by the X server.
+ *
+ * To understand everything else, start reading main() as that is what sets everything up before
+ * entering the event loop.
  *
  * @see https://www.cl.cam.ac.uk/~mgk25/ucs/icccm.pdf
+ *
+ * Below is a high level call stack for dwm:
+ *
+ *    main
+ *    ├── checkotherwm
+ *    ├── die
+ *    ├── setup
+ *    │  ├── sigchld
+ *    │  │  └── die
+ *    │  ├── ecalloc
+ *    │  │  └── die
+ *    │  ├── updategeom
+ *    │  │  ├── ecalloc
+ *    │  │  │  └── die
+ *    │  │  ├── createmon
+ *    │  │  │  └── ecalloc
+ *    │  │  │     └── die
+ *    │  │  ├── wintomon
+ *    │  │  │  ├── wintoclient
+ *    │  │  │  ├── rectomon
+ *    │  │  │  └── getrootptr
+ *    │  │  ├── updatebarpos
+ *    │  │  └── isuniquegeom
+ *    │  ├── drw_create
+ *    │  │  └── ecalloc
+ *    │  ├── drw_scm_create
+ *    │  │  ├── drw_clr_create
+ *    │  │  │  └── die
+ *    │  │  └── ecalloc
+ *    │  ├── drw_cur_create
+ *    │  │  └── ecalloc
+ *    │  ├── grabkeys
+ *    │  │  └── updatenumlockmask
+ *    │  ├── updatebars
+ *    │  ├── focus
+ *    │  └── drw_fontset_create
+ *    │     └── xfont_create
+ *    │        └── ecalloc
+ *    ├── scan
+ *    │  └── getstate
+ *    ├── run
+ *    │  ├── propertynotify
+ *    │  │  ├── wintoclient
+ *    │  │  ├── updatewmhints
+ *    │  │  ├── updatetitle
+ *    │  │  │  └── gettextprop
+ *    │  │  ├── updatestatus
+ *    │  │  │  ├── gettextprop
+ *    │  │  │  └── drawbar
+ *    │  │  ├── updatewindowtype
+ *    │  │  │  └── getatomprop
+ *    │  │  ├── drawbar
+ *    │  │  ├── drawbars
+ *    │  │  │  └── drawbar
+ *    │  │  └── arrange
+ *    │  ├── unmapnotify
+ *    │  │  ├── wintoclient
+ *    │  │  ├── unmanage
+ *    │  │  │  ├── updateclientlist
+ *    │  │  │  ├── setclientstate
+ *    │  │  │  ├── focus
+ *    │  │  │  ├── detachstack
+ *    │  │  │  ├── detach
+ *    │  │  │  └── arrange
+ *    │  │  └── setclientstate
+ *    │  ├── enternotify
+ *    │  │  ├── wintoclient
+ *    │  │  ├── wintomon
+ *    │  │  │  ├── wintoclient
+ *    │  │  │  └── recttomon
+ *    │  │  ├── unfocus
+ *    │  │  └── focus
+ *    │  ├── destroynotify
+ *    │  │  ├── wintoclient
+ *    │  │  └── unmanage
+ *    │  │     ├── updateclientlist
+ *    │  │     ├── setclientstate
+ *    │  │     ├── focus
+ *    │  │     ├── detachstack
+ *    │  │     ├── detach
+ *    │  │     └── arrange
+ *    │  ├── maprequest
+ *    │  │  ├── manage
+ *    │  │  │  ├── ecalloc
+ *    │  │  │  │  └── die
+ *    │  │  │  ├── wintoclient
+ *    │  │  │  ├── updatewmhints
+ *    │  │  │  ├── updatesizehints
+ *    │  │  │  ├── grabbuttons
+ *    │  │  │  │  └── updatenumlockmask
+ *    │  │  │  ├── unfocus
+ *    │  │  │  ├── setclientstate
+ *    │  │  │  ├── updatetitle
+ *    │  │  │  │  └── gettextprop
+ *    │  │  │  ├── updatewindowtype
+ *    │  │  │  │  └── getatomprop
+ *    │  │  │  ├── focus
+ *    │  │  │  ├── configure
+ *    │  │  │  ├── attachstack
+ *    │  │  │  ├── attach
+ *    │  │  │  ├── arrange
+ *    │  │  │  └── applyrules
+ *    │  │  └── wintoclient
+ *    │  ├── clientmessage
+ *    │  │  ├── wintoclient
+ *    │  │  ├── seturgent
+ *    │  │  └── setfullscreen
+ *    │  │     ├── resizeclient
+ *    │  │     └── arrange
+ *    │  ├── configurerequest
+ *    │  │  ├── wintoclient
+ *    │  │  └── configure
+ *    │  ├── buttonpress
+ *    │  │  ├── wintoclient
+ *    │  │  ├── wintomon
+ *    │  │  │  ├── wintoclient
+ *    │  │  │  └── recttomon
+ *    │  │  ├── unfocus
+ *    │  │  ├── spawn
+ *    │  │  ├── togglefloating
+ *    │  │  │  ├── resize
+ *    │  │  │  └── arrange
+ *    │  │  ├── resizemouse
+ *    │  │  │  ├── sendmon
+ *    │  │  │  │  ├── unfocus
+ *    │  │  │  │  ├── focus
+ *    │  │  │  │  ├── detachstack
+ *    │  │  │  │  ├── detach
+ *    │  │  │  │  ├── attachstack
+ *    │  │  │  │  ├── attach
+ *    │  │  │  │  └── arrange
+ *    │  │  │  ├── resize
+ *    │  │  │  ├── recttomon
+ *    │  │  │  ├── maprequest
+ *    │  │  │  ├── focus
+ *    │  │  │  ├── expose
+ *    │  │  │  ├── restack
+ *    │  │  │  │  └── drawbar
+ *    │  │  │  ├── configurerequest
+ *    │  │  │  └── togglefloating
+ *    │  │  │     └── arrange
+ *    │  │  ├── movemouse
+ *    │  │  │  ├── sendmon
+ *    │  │  │  │  ├── unfocus
+ *    │  │  │  │  ├── focus
+ *    │  │  │  │  ├── detachstack
+ *    │  │  │  │  ├── detach
+ *    │  │  │  │  ├── attachstack
+ *    │  │  │  │  ├── attach
+ *    │  │  │  │  └── arrange
+ *    │  │  │  ├── resize
+ *    │  │  │  ├── recttomon
+ *    │  │  │  ├── maprequest
+ *    │  │  │  ├── getrootptr
+ *    │  │  │  ├── focus
+ *    │  │  │  ├── expose
+ *    │  │  │  ├── restack
+ *    │  │  │  │  └── drawbar
+ *    │  │  │  ├── configurerequest
+ *    │  │  │  └── togglefloating
+ *    │  │  │     └── arrange
+ *    │  │  ├── view
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── toggleview
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── toggletag
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── tag
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── focus
+ *    │  │  ├── setlayout
+ *    │  │  │  └── drawbar
+ *    │  │  ├── restack
+ *    │  │  │  └── drawbar
+ *    │  │  └── drw_fontset_getwidth
+ *    │  │     └── drw_text
+ *    │  │        ├── die
+ *    │  │        ├── drw_font_getexts
+ *    │  │        └── xfont_free
+ *    │  ├── configurenotify
+ *    │  │  ├── updategeom
+ *    │  │  │  ├── ecalloc
+ *    │  │  │  │  └── die
+ *    │  │  │  ├── createmon
+ *    │  │  │  │  └── ecalloc
+ *    │  │  │  │     └── die
+ *    │  │  │  ├── wintomon
+ *    │  │  │  │  ├── wintoclient
+ *    │  │  │  │  ├── rectomon
+ *    │  │  │  │  └── getrootptr
+ *    │  │  │  ├── updatebarpos
+ *    │  │  │  ├── isuniquegeom
+ *    │  │  │  ├── detachstack
+ *    │  │  │  ├── cleanupmon
+ *    │  │  │  ├── attachstack
+ *    │  │  │  ├── attach
+ *    │  │  │  └── drw_resize
+ *    │  │  ├── updatebars
+ *    │  │  ├── resizeclient
+ *    │  │  ├── focus
+ *    │  │  └── arrange
+ *    │  ├── keypress
+ *    │  │  ├── focusmon
+ *    │  │  │  ├── unfocus
+ *    │  │  │  ├── focus
+ *    │  │  │  └── dirtomon
+ *    │  │  ├── spawn
+ *    │  │  ├── togglefloating
+ *    │  │  │  ├── resize
+ *    │  │  │  └── arrange
+ *    │  │  ├── quit
+ *    │  │  ├── zoom
+ *    │  │  │  ├── nexttiled
+ *    │  │  │  └── pop
+ *    │  │  │     ├── focus
+ *    │  │  │     ├── detach
+ *    │  │  │     ├── attach
+ *    │  │  │     └── arrange
+ *    │  │  ├── killclient
+ *    │  │  │  └── sendevent
+ *    │  │  ├── view
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── toggleview
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── toggletag
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── tag
+ *    │  │  │  ├── focus
+ *    │  │  │  └── arrange
+ *    │  │  ├── focusstack
+ *    │  │  │  ├── focus
+ *    │  │  │  └── restack
+ *    │  │  │     └── drawbar
+ *    │  │  ├── setlayout
+ *    │  │  │  ├── drawbar
+ *    │  │  │  └── arrange
+ *    │  │  ├── tagmon
+ *    │  │  │  ├── sendmon
+ *    │  │  │  │  ├── unfocus
+ *    │  │  │  │  ├── focus
+ *    │  │  │  │  ├── detachstack
+ *    │  │  │  │  ├── detach
+ *    │  │  │  │  ├── attachstack
+ *    │  │  │  │  ├── attach
+ *    │  │  │  │  └── arrange
+ *    │  │  │  └── dirtomon
+ *    │  │  ├── togglebar
+ *    │  │  │  └── arrange
+ *    │  │  ├── setmfact
+ *    │  │  │  └── arrange
+ *    │  │  └── incnmaster
+ *    │  │     └── arrange
+ *    │  ├── focusin
+ *    │  │  └── setfocus
+ *    │  │     └── sendevent
+ *    │  ├── expose
+ *    │  │  ├── wintomon
+ *    │  │  │  ├── wintoclient
+ *    │  │  │  └── recttomon
+ *    │  │  └── drawbar
+ *    │  ├── motionnotify
+ *    │  │  ├── recttomon
+ *    │  │  └── focus
+ *    │  ├── scan
+ *    │  │  └── manage
+ *    │  │     └── ecalloc
+ *    │  │        └── die
+ *    │  ├── mappingnotify
+ *    │  │  └── grabkeys
+ *    │  │     └── updatenumlockmask
+ *    │  ├── setup
+ *    │  │  └── updatestatus
+ *    │  │     ├── gettextprop
+ *    │  │     └── drawbar
+ *    │  └── updatewindowtype
+ *    │     └── setfullscreen
+ *    │        ├── resizeclient
+ *    │        └── arrange
+ *    └── cleanup
+ *       ├── unmanage
+ *       │  └── updateclientlist
+ *       ├── view
+ *       │  ├── focus
+ *       │  └── arrange
+ *       ├── cleanupmon
+ *       ├── drw_cur_free
+ *       └── drw_free
+ *          └── drw_fontset_free
+ *             ├── drw_fontset_free
+ *             └── xfont_free
+ *
+ * The above skips details for commonly called functions like drawbar, resize, arrange, focus and
+ * unfocus.
  */
 #include <errno.h>
 #include <locale.h>
@@ -2831,7 +3259,7 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
  *
  * Internal call stack:
  *    ~ -> focus -> grabbuttons
- *    ~ -> unfous -> grabbuttons
+ *    ~ -> unfocus -> grabbuttons
  *    run -> maprequest -> manage -> grabbuttons
  */
 void

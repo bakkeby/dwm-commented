@@ -458,6 +458,14 @@ drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
 	                       DefaultColormap(drw->dpy, drw->screen),
 	                       clrname, dest))
 		die("error, cannot allocate color '%s'", clrname);
+
+	/* It is worth noting that the created colours do not have anything set for the alpha channel
+	 * which is used in the context of compositors and transparency. As such using a compositor
+	 * to apply transparency will also affect the window borders. A workaround for this is to
+	 * remove transparency from the created colours by setting the alpha value to be 100% opaque.
+	 *
+	 *    dest->pixel |= 0xff << 24;
+	 */
 }
 
 /* Wrapper to create color schemes. The caller has to call free(3) on the
