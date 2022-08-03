@@ -268,6 +268,7 @@
  *    │  │  │  └── recttomon
  *    │  │  ├── unfocus
  *    │  │  ├── spawn
+ *    │  │  │  └── die
  *    │  │  ├── togglefloating
  *    │  │  │  ├── resize
  *    │  │  │  └── arrange
@@ -360,6 +361,7 @@
  *    │  │  │  ├── focus
  *    │  │  │  └── dirtomon
  *    │  │  ├── spawn
+ *    │  │  │  └── die
  *    │  │  ├── togglefloating
  *    │  │  │  ├── resize
  *    │  │  │  └── arrange
@@ -5582,8 +5584,7 @@ sigchld(int unused)
  * @calls ConnectionNumber https://linux.die.net/man/3/connectionnumber
  * @calls setsid https://linux.die.net/man/2/setsid
  * @calls execvp https://linux.die.net/man/3/execvp
- * @calls perror https://linux.die.net/man/3/perror
- * @calls exit https://linux.die.net/man/3/exit
+ * @calls die to print errors and exit dwm (see util.c)
  * @see https://man7.org/linux/man-pages/man2/fork.2.html
  * @see https://tronche.com/gui/x/xlib/display/display-macros.html
  *
@@ -5643,11 +5644,9 @@ spawn(const Arg *arg)
 		 * the dwm code. */
 		execvp(((char **)arg->v)[0], (char **)arg->v);
 		/* If the execvp fails for whatever reason, then we are still here executing dwm
-		 * code. So we print an error to say that we failed to execute the command and we
-		 * call exit to ensure that this process stops running. */
-		fprintf(stderr, "dwm: execvp %s", ((char **)arg->v)[0]);
-		perror(" failed");
-		exit(EXIT_SUCCESS);
+		 * code. So we make a call to die to print an error to say that we failed to execute the
+		 * command before calling exit to ensure that this process stops running. */
+		die("dwm: execvp '%s' failed:", ((char **)arg->v)[0]);
 	}
 }
 

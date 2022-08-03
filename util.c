@@ -73,8 +73,10 @@ ecalloc(size_t nmemb, size_t size)
  *    main -> setup -> sigchld -> die
  *    main -> die
  *    run -> buttonpress -> drw_fontset_getwidth -> drw_text -> die
+ *    run -> buttonpress -> spawn -> die
  *    run -> configurenotify -> updategeom -> ecalloc -> die
  *    run -> configurenotify -> updategeom -> createmon -> ecalloc -> die
+ *    run -> keypress -> spawn -> die
  *    run -> maprequest -> manage -> ecalloc -> die
  *    run -> scan -> manage -> ecalloc -> die
  *    xerrorstart -> die
