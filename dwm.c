@@ -6099,6 +6099,7 @@ unfocus(Client *c, int setfocus)
  * @called_from unmapnotify to stop managing the window and remove the client
  * @calls XGrabServer https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
  * @calls XSetErrorHandler https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
+ * @calls XSelectInput https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
  * @calls XConfigureWindow https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
  * @calls XUngrabButton https://tronche.com/gui/x/xlib/input/XUngrabButton.html
  * @calls XSync https://tronche.com/gui/x/xlib/event-handling/XSync.html
@@ -6138,6 +6139,11 @@ unmanage(Client *c, int destroyed)
 		/* Here we set the dummy X error handler just in case what we do next is going to
 		 * generate an error that would otherwise cause dwm to exit. */
 		XSetErrorHandler(xerrordummy);
+		/* This call tells the X server that we are no longer interested in receiving events for
+		 * the given window. If the window stops being managed by the window manager and is being
+		 * managed by some other program, like tabbed for example, then we do not want the window
+		 * manager interferring by reacting to FocusIn events for said window. */
+		XSelectInput(dpy, c->win, NoEventMask);
 		/* This is to clear / remove the border that is drawn around the window */
 		XConfigureWindow(dpy, c->win, CWBorderWidth, &wc); /* restore border */
 		/* Stop listening for any button press notification for this window */
