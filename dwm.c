@@ -3229,17 +3229,15 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 		return 0;
 
 	/* The property data can either be a text string or it can be a list of text strings. */
-	if (name.encoding == XA_STRING)
+	if (name.encoding == XA_STRING) {
 		/* If it is a text string then just copy the data to the designated text variable. */
 		strncpy(text, (char *)name.value, size - 1);
-	else {
-		/* If it is a list of text strings then we need to retrieve it by calling
-		 * XmbTextPropertyToTextList and the returned list needs to be freed when we are
-		 * finished with it. */
-		if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success && n > 0 && *list) {
-			strncpy(text, *list, size - 1);
-			XFreeStringList(list);
-		}
+	/* If it is a list of text strings then we need to retrieve it by calling
+	 * XmbTextPropertyToTextList and the returned list needs to be freed when we are
+	 * finished with it. */
+	} else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success && n > 0 && *list) {
+		strncpy(text, *list, size - 1);
+		XFreeStringList(list);
 	}
 	/* This is to make sure that the end of the text marks the end of the string, in the event
 	 * that the property held more data than we could store. */
@@ -3854,12 +3852,20 @@ maprequest(XEvent *e)
 	static XWindowAttributes wa;
 	XMapRequestEvent *ev = &e->xmaprequest;
 
-	/* This fetches the window attributes from the X server which contains the a lot of
-	 * information besides the width and height of the window. Refer to the documentation for
-	 * XGetWindowAttributes for more information. */
-	if (!XGetWindowAttributes(dpy, ev->window, &wa))
-		return;
-	/* From the documentation we have that:
+	/* This if statement combines two if statements:
+	 *
+	 *    if (!XGetWindowAttributes(dpy, ev->window, &wa))
+	 *       return;
+	 *
+	 * This fetches the window attributes from the X server which contains the a lot of
+	 * information besides the width and height of the window. If for some reason we were unable
+	 * to retrieve the window attributes for the given window then we bail here. Refer to the
+	 * documentation for XGetWindowAttributes for more information.
+	 *
+	 *    if (wa.override_redirect)
+	 *       return;
+	 *
+	 * From the documentation we have that:
 	 *   The override_redirect member is set to indicate whether this window overrides structure
 	 *   control facilities and can be True or False. Window manager clients should ignore the
 	 *   window if this member is True.
@@ -3869,8 +3875,9 @@ maprequest(XEvent *e)
 	 * control over the window. A good example of this is dmenu which controls the size and
 	 * position on its own and does not want the window manager to intervene.
 	 */
-	if (wa.override_redirect)
+	if (!XGetWindowAttributes(dpy, ev->window, &wa) || wa.override_redirect)
 		return;
+
 	/* The wintoclient function returns the client that relates to the given window. If one is
 	 * found then we do not proceed. This is essentially a safeguard to prevent erroneous or
 	 * duplicate map request events from causing issues. If we do not find that the window is
@@ -7030,17 +7037,23 @@ zoom(const Arg *arg)
 	Client *c = selmon->sel;
 
 	/* If the selected layout for the selected monitor is floating layout (as indicated by
-	 * having a NULL arrange function as defined in the layouts array), or if the selected
-	 * client is floating, then we do nothing. */
-	if (!selmon->lt[selmon->sellt]->arrange
-	|| (selmon->sel && selmon->sel->isfloating))
+	 * having a NULL arrange function as defined in the layouts array), if there is no selected
+	 * client or if the selected client is floating, then we do nothing. */
+	if (!selmon->lt[selmon->sellt]->arrange || !c || c->isfloating)
 		return;
-	/* If the selected client is already the master client (or both are NULL) then */
-	if (c == nexttiled(selmon->clients))
-		/* try to find the next tiled client, but bail if there is no other tiled clients */
-		if (!c || !(c = nexttiled(c->next)))
 
-			return;
+	/* This one statment combines different pieces of logic:
+	 *    - it first checks whether the selected client is the master client (first tiled client)
+	 *    - if it is not then we exit the if statement and we stick with the selected client to
+	 *      pass it to pop
+	 *    - if it is then we select the next tiled client after that, which will be the second
+	 *      tiled client
+	 *    - if such a client does not exist (as in there is only one tiled client) then we return
+	 *    - otherwise we keep that client to pass to pop
+	 */
+	if (c == nexttiled(selmon->clients) && !(c = nexttiled(c->next)))
+		return;
+
 	/* Call pop to move the client to the top of the tile stack so that it becomes the new
 	 * master client. */
 	pop(c);
