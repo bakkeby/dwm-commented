@@ -3724,7 +3724,7 @@ manage(Window w, XWindowAttributes *wa)
 	 *    - (c->x + (c->w / 2) < c->mon->wx + c->mon->ww))
 	 *      if the client center on the x axis is within the right hand side of the monitor
 	 *
-	 *    - then we use bh as the size
+	 *    - then we use bh as the y position
 	 *
 	 * We then get either MAX(c->y, bh) or MAX(c->y, c->mon->my). The y-axis is lowest at the
 	 * top and highest at the bottom, so the MAX is only ever going to push a client further

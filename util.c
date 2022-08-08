@@ -12,43 +12,6 @@
 
 #include "util.h"
 
-/* Memory allocation wrapper around calloc that calls die in the event that memory could not be
- * allocated.
- *
- * @called_from drw_cur_create to allocate memory for a cursor
- * @called_from drw_scm_create to allocate memory for the colour scheme
- * @called_from drw_create to allocate memory for the drawable
- * @called_from setup to allocate memory for colour schemes
- * @called_from updategeom to allocate memory to hold unique screen info
- * @called_from createmon to allocate memory for new Monitor structures
- * @called_from manage to allocate memory for new Client structures
- * @calls calloc to allocate memory
- * @calls die in the event that memory could not be allocated
- *
- * Internal call stack:
- *    main -> setup -> drw_cur_create -> ecalloc
- *    main -> setup -> drw_fontset_create -> xfont_create -> ecalloc
- *    main -> setup -> drw_scm_create -> ecalloc
- *    main -> setup -> drw_create -> ecalloc
- *    main -> setup -> ecalloc
- *    main -> setup -> updategeom -> ecalloc
- *    main -> setup -> updategeom -> createmon -> ecalloc
- *    run -> configurenotify -> updategeom -> ecalloc
- *    run -> configurenotify -> updategeom -> createmon -> ecalloc
- *    run -> maprequest -> manage -> ecalloc
- *    run -> scan -> manage -> ecalloc
- */
-void *
-ecalloc(size_t nmemb, size_t size)
-{
-	void *p;
-
-	/* If memory could not be allocated then call die to exit the window manager. */
-	if (!(p = calloc(nmemb, size)))
-		die("calloc:");
-	return p;
-}
-
 /* Helper function that prints an error before exiting the process.
  *
  * @called_from ecalloc in case of error
@@ -84,7 +47,8 @@ ecalloc(size_t nmemb, size_t size)
  *    ~ -> drawbar -> drw_fontset_getwidth -> drw_text -> die
  */
 void
-die(const char *fmt, ...) {
+die(const char *fmt, ...)
+{
 	va_list ap;
 
 	/* Note how the function ends with , ... - this means that the function takes variable
@@ -111,4 +75,41 @@ die(const char *fmt, ...) {
 
 	/* Stop the process passing 1 to exit to signify failure. */
 	exit(1);
+}
+
+/* Memory allocation wrapper around calloc that calls die in the event that memory could not be
+ * allocated.
+ *
+ * @called_from drw_cur_create to allocate memory for a cursor
+ * @called_from drw_scm_create to allocate memory for the colour scheme
+ * @called_from drw_create to allocate memory for the drawable
+ * @called_from setup to allocate memory for colour schemes
+ * @called_from updategeom to allocate memory to hold unique screen info
+ * @called_from createmon to allocate memory for new Monitor structures
+ * @called_from manage to allocate memory for new Client structures
+ * @calls calloc to allocate memory
+ * @calls die in the event that memory could not be allocated
+ *
+ * Internal call stack:
+ *    main -> setup -> drw_cur_create -> ecalloc
+ *    main -> setup -> drw_fontset_create -> xfont_create -> ecalloc
+ *    main -> setup -> drw_scm_create -> ecalloc
+ *    main -> setup -> drw_create -> ecalloc
+ *    main -> setup -> ecalloc
+ *    main -> setup -> updategeom -> ecalloc
+ *    main -> setup -> updategeom -> createmon -> ecalloc
+ *    run -> configurenotify -> updategeom -> ecalloc
+ *    run -> configurenotify -> updategeom -> createmon -> ecalloc
+ *    run -> maprequest -> manage -> ecalloc
+ *    run -> scan -> manage -> ecalloc
+ */
+void *
+ecalloc(size_t nmemb, size_t size)
+{
+    void *p;
+
+    /* If memory could not be allocated then call die to exit the window manager. */
+    if (!(p = calloc(nmemb, size)))
+        die("calloc:");
+    return p;
 }
