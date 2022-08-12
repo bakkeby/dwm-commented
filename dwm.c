@@ -3691,53 +3691,16 @@ manage(Window w, XWindowAttributes *wa)
 		applyrules(c);
 	}
 
-	/* All of the below size and position checks only apply in the event that the client is
-	 * floating. */
-
-	/* If the client's right hand border exceeds the monitor's right hand border then move
-	 * the client so that it is fully visible. */
-	if (c->x + WIDTH(c) > c->mon->mx + c->mon->mw)
-		c->x = c->mon->mx + c->mon->mw - WIDTH(c);
-	/* If the client's bottom border exceeds the monitor's bottom border then move the client
-	 * so that it is fully visible. */
-	if (c->y + HEIGHT(c) > c->mon->my + c->mon->mh)
-		c->y = c->mon->my + c->mon->mh - HEIGHT(c);
-	/* If the client's left hand border exceeds the monitor's left border then move the client
-	 * so that it is fully visible. */
-	c->x = MAX(c->x, c->mon->mx);
-	/* Only fix client y-offset, if the client center might cover the bar.
-	 *
-	 * I can only guess as to what the intention of this line is as it does not make much sense.
-	 * The bar can be placed at the top of the screen or at the bottom of the screen as
-	 * controlled by the topbar variable in the configuration file. The comment above might make
-	 * sense if we are talking about having a bottom bar and a window that is placed so far down
-	 * that it covers the bar, but this does something very different.
-	 *
-	 * As for what this line says we have that:
-	 *
-	 *    - ((c->mon->by == c->mon->my) &&
-	 *      if the position is the same as the monitor y position (as in topbar) and
-	 *
-	 *    - (c->x + (c->w / 2) >= c->mon->wx)
-	 *      if the client center on the x axis is within the left hand side of the monitor and
-	 *
-	 *    - (c->x + (c->w / 2) < c->mon->wx + c->mon->ww))
-	 *      if the client center on the x axis is within the right hand side of the monitor
-	 *
-	 *    - then we use bh as the y position
-	 *
-	 * We then get either MAX(c->y, bh) or MAX(c->y, c->mon->my). The y-axis is lowest at the
-	 * top and highest at the bottom, so the MAX is only ever going to push a client further
-	 * down. The x-axis has nothing to do with the vertical alignment of a window.
-	 *
-	 * Assuming the condition was correct one would expect the value to be c->mon->my + bh as
-	 * otherwise we are assuming that the monitor's y position is 0.
-	 *
-	 * Possibly a more sensical approach might have been:
-	 *    c->y = MAX(c->y, c->mon->wy);
-	 */
-	c->y = MAX(c->y, ((c->mon->by == c->mon->my) && (c->x + (c->w / 2) >= c->mon->wx)
-		&& (c->x + (c->w / 2) < c->mon->wx + c->mon->ww)) ? bh : c->mon->my);
+	/* The intention of the below checks is to move the window into view at the closest border of
+	 * the window area if the window were otherwise to spawn out of view if floating. The window
+	 * area, as opposed to the monitor area, is used here to avoid floating windows overlapping
+	 * the bar. */
+	if (c->x + WIDTH(c) > c->mon->wx + c->mon->ww)
+		c->x = c->mon->wx + c->mon->ww - WIDTH(c);
+	if (c->y + HEIGHT(c) > c->mon->wy + c->mon->wh)
+		c->y = c->mon->wy + c->mon->wh - HEIGHT(c);
+	c->x = MAX(c->x, c->mon->wx);
+	c->y = MAX(c->y, c->mon->wy);
 
 	/* Set the border width as per config. */
 	c->bw = borderpx;
