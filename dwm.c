@@ -922,13 +922,7 @@ static char stext[256];
 /* This holds the default screen value, used when creating windows and handling the display etc. */
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
-
-/* bh is short for bar height, as in how tall the bar is.
- * blw is short for bar layout width and it is set in the drawbar function based on the layout
- * symbol and it is read in the buttonpress function when determining whether the user clicked on
- * the layout symbol or not.
- */
-static int bh, blw = 0;      /* bar geometry */
+static int bh;               /* bar height */
 static int lrpad;            /* sum of left and right padding for text */
 
 /* This is the reference we store the X error handler in and it is used in the xerror function for
@@ -1626,17 +1620,8 @@ buttonpress(XEvent *e)
 			 * bitmask value of 00100000. */
 			arg.ui = 1 << i;
 		/* If we did exhaust all the tag icons then we check if the user must have clicked
-		 * on the layout symbol.
-		 *
-		 * The variable blw is short for bar layout width and this is set in the drawbar
-		 * function when drawing the bar. The need for having a global variable to hold this
-		 * information rather than just using TEXTW(m->ltsymbol) is bizarre to say the least,
-		 * but presumably this has to do with that it is possible that the layout symbol of
-		 * the monitor has been changed since the bar was last drawn (or that may have been
-		 * the case in previous iterations of dwm). The variable is set based on the last bar
-		 * that was drawn which in principle could be for another monitor - in which case the
-		 * blw value could be wrong for the current monitor. */
-		} else if (ev->x < x + blw)
+		 * on the layout symbol. */
+		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
 			click = ClkLtSymbol;
 		/* If the click was to the right of the layout symbol then we need to check if the
 		 * click was on the status text, which is drawn to the far right of the bar. We do
@@ -2638,12 +2623,7 @@ drawbar(Monitor *m)
 		/* We are done drawing, move our draw "cursor" to the next tag. */
 		x += w;
 	}
-	/* This sets the width of the layout symbol. The blw variable short for bar layout width
-	 * and the value is used in the buttonpress function when working out whether a click on
-	 * the bar involved the layout symbol or not. The width is captured at the time when the
-	 * bar is drawn as in principle the layout symbol of the monitor may have been changed by
-	 * the time the user clicked on the bar. */
-	w = blw = TEXTW(m->ltsymbol);
+	w = TEXTW(m->ltsymbol); /* The width of the layout symbol. */
 	/* Reset the colour scheme back to normal. */
 	drw_setscheme(drw, scheme[SchemeNorm]);
 	/* Just draw the layout symbol. Note how the drw_text function returns how far the cursor
