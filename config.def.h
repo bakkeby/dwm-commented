@@ -235,7 +235,7 @@ static const char *termcmd[]  = { "st", NULL };
  * it is interested in receiving key press events corresponding to the given key combinations.
  * Refer to the keypress function for details on how the window manager interprets the events
  * received for the key combinations and calls the designated functions. */
-static Key keys[] = {
+static const Key keys[] = {
 	/* modifier                     key        function        argument */
 	{ MODKEY,                       XK_p,      spawn,          {.v = dmenucmd } },
 	{ MODKEY|ShiftMask,             XK_Return, spawn,          {.v = termcmd } },
@@ -296,7 +296,7 @@ static Key keys[] = {
  * or
  *    { ClkClientWin,         MODKEY,         8,              myfunc,         {0} },
  **/
-static Button buttons[] = {
+static const Button buttons[] = {
 	/* click                event mask      button          function        argument */
 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
 	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
