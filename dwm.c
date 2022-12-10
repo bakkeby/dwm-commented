@@ -3314,9 +3314,10 @@ grabbuttons(Client *c, int focused)
  *
  * @called_from mappingnotify in the event of keyboard or keyboard layout change
  * @called_from setup to grab the keys initially
+ * @calls XDisplayKeycodes https://tronche.com/gui/x/xlib/input/XDisplayKeycodes.html
  * @calls XUngrabKey https://tronche.com/gui/x/xlib/input/XUngrabKey.html
+ * @calls XGetKeyboardMapping https://tronche.com/gui/x/xlib/input/XGetKeyboardMapping.html
  * @calls XGrabKey https://tronche.com/gui/x/xlib/input/XGrabKey.html
- * @calls XKeysymToKeycode https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToKeycode.html
  * @calls updatenumlockmask
  * @see https://tronche.com/gui/x/xlib/utilities/keyboard/
  *
@@ -3336,14 +3337,46 @@ grabkeys(void)
 	 * declaring the modifiers array. The alternative could be to place all of the below in a
 	 * separate function but that would be less clean than simply adding it all in a block. */
 	{
-		unsigned int i, j;
+		unsigned int i, j, k;
 		/* The list of modifiers we are interested in. No additional modifier, the Lock mask,
 		 * the Num Lock mask, and Lock and Num Lock mask together. */
 		unsigned int modifiers[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
-		KeyCode code;
+		int start, end, skip;
+		KeySym *syms;
 
 		/* Call to release any keys we may have grabbed before. */
 		XUngrabKey(dpy, AnyKey, AnyModifier, root);
+
+		/* It is not uncommon for a keysym to map to multiple keycodes. Here we make a call to
+		 * XDisplayKeycodes to get the number of keycodes that are supported by the specific
+		 * display, then we call XGetKeyboardMapping to get all the keysym for all key code within
+		 * the given range.
+		 *
+		 * The reasoning here is that if we have a keybinding for, say, XF86AudioPlay then we want
+		 * to subscribe to all key press events for all codes that XF86AudioPlay maps to.
+		 *
+		 * Take the following example:
+		 *
+		 *     % xmodmap -pke | grep XF86AudioPlay
+		 *     keycode 172 = XF86AudioPlay XF86AudioPause XF86AudioPlay XF86AudioPause
+		 *     keycode 208 = XF86AudioPlay NoSymbol XF86AudioPlay
+		 *     keycode 215 = XF86AudioPlay NoSymbol XF86AudioPlay
+		 *
+		 * Here the keyboard may be sending the keycode of 172 while a pair of headphones may be
+		 * sending through the keycode of 215. In order for both the keyboard and headphones to
+		 * work we need to grab both keys when going through and setting up keybindings.
+		 */
+		XDisplayKeycodes(dpy, &start, &end);
+		/* This may not be immediately obvious, but the skip variable here will hold the number of
+		 * keysyms per key code. This is later used to know how many items to skip when looking up
+		 * keysyms for a given key code, hence the variable name of "skip". */
+		syms = XGetKeyboardMapping(dpy, start, end - start + 1, &skip);
+		/* In the unlikely event that XGetKeyboardMapping can't allocate memory to hold the
+		 * returned syms then syms will be NULL. This is a scenario that is unlikely to happen in
+		 * practice and the code is primarily just a precaution. */
+		if (!syms)
+			return;
+
 		/* Loop through all the key bindings as defined in the configuration file.
 		 *
 		 * As a practical example let's look at this key binding:
@@ -3358,8 +3391,8 @@ grabkeys(void)
 		 * enabled.
 		 *
 		 * The inner for loop runs through the modifiers that we listed in the modifiers
-		 * array earlier and combines each modifier with the modifier defined in the key
-		 * bindings array.
+		 * array earlier and combines each with the modifier defined in the key bindings
+		 * array.
 		 *
 		 * This will lead to the window manager receiving KeyPress notifications in the
 		 * following scenarios:
@@ -3381,15 +3414,32 @@ grabkeys(void)
 		 * but it will not work, however, due to how the logic in the keypress function
 		 * handles modifiers, key codes and keysyms.
 		 */
-		for (i = 0; i < LENGTH(keys); i++)
-			if ((code = XKeysymToKeycode(dpy, keys[i].keysym)))
-				/* Loop through all the modifiers we are interested in */
-				for (j = 0; j < LENGTH(modifiers); j++)
-					/* Grab the key to tell the X server that we are interested
-					 * in receiving KeyPress notifications when the user clicks
-					 * on the key in combination with the given modifier. */
-					XGrabKey(dpy, code, keys[i].mod | modifiers[j], root,
-						True, GrabModeAsync, GrabModeAsync);
+		for (k = start; k <= end; k++)
+			for (i = 0; i < LENGTH(keys); i++)
+				/* Check that the keysym listed in the keys array matches the key. The skip
+				 * variable holds the number of keysyms per key code, so we multiply that to
+				 * find the first keysym for a given key code. Note that we only match on the
+				 * very first keysym for a key (not all keysyms for all keys).
+				 *
+				 * This has to do with how dwm intentionally only supports top level keysyms as
+				 * due to how modifier keys are handled, e.g. XK_colon is not supported but
+				 * XK_semicolon is.
+				 *
+				 *    $ xmodmap -pke | grep colon
+				 *    keycode  47 = semicolon colon semicolon colon dead_acute dead_doubleacute
+				 *                  dead_acute
+				 */
+				if (keys[i].keysym == syms[(k - start) * skip])
+					/* Loop through all the modifiers we are interested in */
+					for (j = 0; j < LENGTH(modifiers); j++)
+						/* Grab the key to tell the X server that we are interested
+						 * in receiving KeyPress notifications when the user clicks
+						 * on the key in combination with the given modifier. */
+						XGrabKey(dpy, k,
+							keys[i].mod | modifiers[j],
+							root, True,
+							GrabModeAsync, GrabModeAsync);
+		XFree(syms);
 	}
 }
 
