@@ -1149,7 +1149,7 @@ applyrules(Client *c)
 int
 applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 {
-	/* It is worth nothing here that the x, y, w, and h parameters are pointers to the variables
+	/* It is worth noting here that the x, y, w, and h parameters are pointers to the variables
 	 * that the resize function passes as references. This is because this function manipulates
 	 * those values directly. This is also why every use of these variables in this function
 	 * has the pointer (*) prefix, e.g. *w.
