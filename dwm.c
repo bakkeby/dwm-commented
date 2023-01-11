@@ -349,8 +349,8 @@
  *    │  │  │  ├── detachstack
  *    │  │  │  ├── cleanupmon
  *    │  │  │  ├── attachstack
- *    │  │  │  ├── attach
- *    │  │  │  └── drw_resize
+ *    │  │  │  └── attach
+ *    │  │  ├── drw_resize
  *    │  │  ├── updatebars
  *    │  │  ├── resizeclient
  *    │  │  ├── focus
