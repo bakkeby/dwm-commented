@@ -156,8 +156,6 @@
  *    ├── checkotherwm
  *    ├── die
  *    ├── setup
- *    │  ├── sigchld
- *    │  │  └── die
  *    │  ├── ecalloc
  *    │  │  └── die
  *    │  ├── updategeom
@@ -884,7 +882,6 @@ static void setmfact(const Arg *arg);
 static void setup(void);
 static void seturgent(Client *c, int urg);
 static void showhide(Client *c);
-static void sigchld(int unused);
 static void spawn(const Arg *arg);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -5169,6 +5166,9 @@ setmfact(const Arg *arg)
  * @calls DisplayWidth https://linux.die.net/man/3/displaywidth
  * @calls DisplayHeight https://linux.die.net/man/3/displayheight
  * @calls RootWindow https://linux.die.net/man/3/rootwindow
+ * @calls sigaction https://man7.org/linux/man-pages/man2/sigaction.2.html
+ * @calls sigemptyset https://man7.org/linux/man-pages/man3/sigemptyset.3p.html
+ * @calls waitpid https://linux.die.net/man/3/waitpid
  * @calls ecalloc to allocate space for the colour schemes (see util.c)
  * @calls drw_create to create the drawable (see drw.c)
  * @calls drw_fontset_create to create the font set (see drw.c)
@@ -5179,11 +5179,12 @@ setmfact(const Arg *arg)
  * @calls updatebars to create the bar window for each monitor
  * @calls updategeom to create the monitors based on Xinerama information
  * @calls updatestatus to initialise the status text variable
- * @calls sigchld to set up the signal handler for child processes
  * @see https://tronche.com/gui/x/xlib/display/display-macros.html
  * @see https://tronche.com/gui/x/xlib/introduction/overview.html
  * @see https://specifications.freedesktop.org/wm-spec/1.3/ar01s03.html
  * @see https://tronche.com/gui/x/xlib/events/processing-overview.html
+ * @see https://pubs.opengroup.org/onlinepubs/9699919799/functions/_Exit.html#tag_16_01_03_01
+ * @see https://www.gnu.org/software/libc/manual/html_node/Interrupted-Primitives.html
  *
  * Internal call stack:
  *    main -> setup
@@ -5194,9 +5195,86 @@ setup(void)
 	int i;
 	XSetWindowAttributes wa;
 	Atom utf8string;
+	struct sigaction sa;
 
-	/* Clean up any zombies immediately. This sets up the signal handler for child processes. */
-	sigchld(0);
+	/* Do not transform children into zombies when they terminate. */
+
+	/* The sigemptyset function initialises an empty signal set; the return value indicating
+	 * success or failure is ignored. */
+	sigemptyset(&sa.sa_mask);
+
+	/* This sets the signal action flags that we want:
+	 *
+	 * SA_NOCLDSTOP - The default behaviour is that whenever a process dies or stops, or when
+	 *                a stopped child process continues execution, the kernel posts the SIGCHLD
+	 *                signal to the parent process. The SA_NOCLDSTOP flag means that no SIGCHLD
+	 *                will occur when a child process stops or resumes, i.e. we will only
+	 *                receive a SIGCHLD when the child process dies (terminates).
+	 * SA_NOCLDWAIT - This flags means that in the case when a SIGCHLD is received then do not
+	 *                transform the child process into a zombie process.
+	 * SA_RESTART   - It is possible for a signal to arrive and be handled while a primitive I/O
+	 *                operation such as open or read is waiting on an I/O device to respond. The
+	 *                POSIX way of handling this scenario is to make the primitive fail straight
+	 *                away with the EINTR error code. This means that POSIX applications that use
+	 *                signal handlers must check for EINTR errors after calls to library functions
+	 *                that can return it, and forgetting to check this is a common source of error.
+	 *                BSD on the other hand avoids EINTR entirely by providing a more convenient
+	 *                approach: to restart the interrupted primitive rather than making it fail.
+	 *                Using this approach one do not have to be concerned about checking for EINTR
+	 *                errors. The SA_RESTART flag tells the signal action handler to behave like
+	 *                BSD does by making certain system calls restartable across signals.
+	 */
+	sa.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;
+	/* This will set the signal handler and SIG_IGN will simply ignore any signals and we only
+	 * expect the SIGCHLD signal to be received when a child process dies. */
+	sa.sa_handler = SIG_IGN;
+	/* This sets our desired action when a SIGCHLD signal is received. */
+	sigaction(SIGCHLD, &sa, NULL);
+
+	/* Clean up any zombies (inherited from .xinitrc etc) immediately. The need for this may not
+	 * be immediately obvious, but for example when the .xinitrc script runs it may spawn other
+	 * processes. Typically at the end the exec command will be used, which results in the
+	 * process itself to be replaced with whatever is being executed. Consider the following
+	 * scenario:
+	 *
+	 *    sleep 10 &
+	 *    exec dwm
+	 *
+	 * Now let's say that this is being evaluated with a PID 1111. The script will run the command
+	 * of sleep 10 as a child process running in the background (e.g. PID 3291 with parent process
+	 * 1111). Then exec dwm will replace the process evaluating .xinitrc and start executing as
+	 * dwm (i.e. PID 1111 is now executing dwm). The result of this is that the sleep is now
+	 * (still) a child process of dwm. When that child process exists after the 10 seconds have
+	 * elapsed it will result in a SIGCHLD and it will be dealt with by the sigaction handler as
+	 * defined above.
+	 *
+	 * What's with the waitpid then? Let's consider this other scenario:
+	 *
+	 *    cat &
+	 *    exec dwm
+	 *
+	 * Here the command of cat is run as a child process (e.g. PID 5183 with parent process 1111).
+	 * As before the exec will replace the current process and start executing dwm. The cat process
+	 * will have died before the sigaction handler was set up before so it will just end up as a
+	 * defunct zombie process waiting to terminate. The waitpid here will find and deal with (i.e.
+	 * ignore) any child processes that are waiting to terminate thus avoiding zombie processes.
+	 *
+	 * The function signature is:
+	 *
+	 *    waitpid (pid_t pid, int *status-ptr, int options)
+	 *
+	 * We pass the pid of -1 to say that we are interested in any process (as opposed to getting
+	 * information on a particular process). This could also have been set to WAIT_ANY.
+	 *
+	 * We pass NULL for the status pointer as we do not care about looking up status information
+	 * for child processes.
+	 *
+	 * For the options we pass the WNOHANG flag which just means that the function should return
+	 * immediately instead of waiting in the event that there are no child processes found.
+	 *
+	 * The outer while is in case there are more than one zombie process waiting to terminate.
+	 */
+	while (waitpid(-1, NULL, WNOHANG) > 0);
 
 	/* Initialise the screen.
 	 *
@@ -5551,28 +5629,6 @@ showhide(Client *c)
 		/* Move the window out of sight. */
 		XMoveWindow(dpy, c->win, WIDTH(c) * -2, c->y);
 	}
-}
-
-/* This sets up a signal handler for child processes. The aim of this, as far as I understand,
- * is to make sure that any zombie processes are cleaned up immediately.
- *
- * @called_from setup to clean up any zombie proceses from previous runs
- * @calls signal https://linux.die.net/man/2/signal
- * @calls die to print errors and exit dwm (see util.c)
- * @calls waitpid https://linux.die.net/man/3/waitpid
- * @see https://linux.die.net/man/2/sigaction
-
- * Internal call stack:
- *    main -> setup -> sigchld
- */
-void
-sigchld(int unused)
-{
-	/* If we can't set up the signal handler then end the program with an error */
-	if (signal(SIGCHLD, sigchld) == SIG_ERR)
-		die("can't install SIGCHLD handler:");
-	/* This will wait for child processes to stop or terminate */
-	while (0 < waitpid(-1, NULL, WNOHANG));
 }
 
 /* This starts a new program by executing a given execvp command.
