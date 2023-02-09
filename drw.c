@@ -397,7 +397,7 @@ drw_fontset_create(Drw* drw, const char *fonts[], size_t fontcount)
 	return (drw->fonts = ret);
 }
 
-/* Wrapper function to create an XftColor based on a given name.
+/* Function to recursively free fonts in an array.
  *
  * @called_from drw_free to free the all fonts
  * @called_from drw_fontset_free (itself) to free the remaining fonts
