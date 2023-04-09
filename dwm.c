@@ -5651,6 +5651,8 @@ showhide(Client *c)
 void
 spawn(const Arg *arg)
 {
+	struct sigaction sa;
+
 	/* If we are executing the dmenu command then we manipulate the value that we pass to
 	 * dmenu_run via the -m argument by setting it to the selected monitor.
 	 *
@@ -5693,6 +5695,20 @@ spawn(const Arg *arg)
 		 * needed because a child created via fork inherits its parent's session ID and we
 		 * need our own because this session ID will be preserved across the execvp call. */
 		setsid();
+
+		/* This restores SIGCHLD sighandler to default before spawning a program.
+		 *
+		 * From sigaction(2):
+		 * A child created via fork(2) inherits a copy of its parent's signal dispositions.
+		 * During an execve(2), the dispositions of handled signals are reset to the default;
+		 * the dispositions of ignored signals are left unchanged.
+		 *
+		 * The reason why this is needed is that some programs would not start due to inheriting
+		 * the signal handler of dwm which ignores all signals. */
+		sigemptyset(&sa.sa_mask);
+		sa.sa_flags = 0;
+		sa.sa_handler = SIG_DFL;
+		sigaction(SIGCHLD, &sa, NULL);
 
 		/* The execvp causes the program that is currently being run (dwm in this case) to
 		 * be replaced with a new program and with a newly initialised stack, heap and data
