@@ -5637,6 +5637,8 @@ showhide(Client *c)
  * @called_from buttonpress in relation to keybindings
  * @calls fork https://linux.die.net/man/2/fork
  * @calls close https://linux.die.net/man/2/close
+ * @calls sigaction https://man7.org/linux/man-pages/man2/sigaction.2.html
+ * @calls sigemptyset https://man7.org/linux/man-pages/man3/sigemptyset.3p.html
  * @calls ConnectionNumber https://linux.die.net/man/3/connectionnumber
  * @calls setsid https://linux.die.net/man/2/setsid
  * @calls execvp https://linux.die.net/man/3/execvp
