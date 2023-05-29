@@ -117,8 +117,8 @@ static const char *colors[][3]      = {
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 
 /* This array controls the client rules which consists of three rule matching filters (the class,
- * instance and title) and four rule options (tags, whether the client is floating or not and the
- * monitor it is supposed to be start on).
+ * instance and title) and three rule options (tags, whether the client is floating or not and the
+ * monitor it is supposed to start on).
  *
  * Refer to the writeup of the applyrules function for more details on this.
  */
