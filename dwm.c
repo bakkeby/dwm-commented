@@ -476,9 +476,9 @@
 
 /* macros */
 
-/* The BUTTONMASK macro is used as part of the MOUSEMASK macro and is directly used in the
- * grabbuttons function. It indicates that we are interested in receiving events when a mouse
- * button is pressed and when it is released when we click on a window. */
+/* The BUTTONMASK macro is used as part of the MOUSEMASK macro and it is directly used in the
+ * grabbuttons function. It indicates that we are interested in receiving events both when a mouse
+ * button is pressed and when it is released. */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
 /* The CLEANMASK macro removes Num Lock mask and Lock mask from a given bit mask.
  * Refer to the numlockmask variable comment for more details on the Num Lock mask.
@@ -495,7 +495,7 @@
 #define LENGTH(X)               (sizeof X / sizeof X[0])
 /* The MOUSEMASK macro is used in the movemouse and resizemouse user functions and it indicates
  * that we are interested in receiving events when the mouse cursor moves in addition to when the
- * mouse button is pressed and released. */
+ * button is released. */
 #define MOUSEMASK               (BUTTONMASK|PointerMotionMask)
 /* The actual width of a client window includes the border and this macro helps calculate that. */
 #define WIDTH(X)                ((X)->w + 2 * (X)->bw)
@@ -549,8 +549,8 @@ enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms *
 enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle,
        ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
 
-/* In C a struct(ure) can be thought of as a user defined data type. They define how much space is
- * needed to allocate memory to hold values for each of the variables inside the structure.
+/* In C, a struct(ure) can be thought of as a user defined data type. They define how much space
+ * is needed to allocate memory to hold values for each of the variables inside the structure.
  *
  * While arrays allow for variables that can hold several data types of the same kind to be
  * defined, a structure allows for data items of different kinds to be defined.
@@ -723,8 +723,8 @@ struct Monitor {
 	 */
 	int mx, my, mw, mh;   /* screen size */
 	/* These variables represents the position and dimensions of the window area, as in the part
-	 * of the monitor where windows are tiled. This is the the space of the monitor less the
-	 * bar window and these are set in the updatebarpos function.
+	 * of the monitor where windows are tiled. This is the space of the monitor excluding the
+	 * bar window. These are set in the updatebarpos function.
 	 *    wx - window area position on the x-axis
 	 *    wy - window area position on the y-axis
 	 *    ww - the window area's width
@@ -978,7 +978,7 @@ static Display *dpy;
 /* This holds a reference to the drawable that we have created. Refer to the struct definition in
  * the drw.h file. */
 static Drw *drw;
-/* Two references to hold the first and selected monitors. */
+/* Two references to hold the first and the selected monitor. */
 static Monitor *mons, *selmon;
 /* Two window references, one for the root window and one for the supporting window. More on the
  * latter in the setup function. */
@@ -1411,7 +1411,7 @@ arrange(Monitor *m)
 		showhide(m->stack);
 
 	/* In similar vein, if we have been given a specific monitor then we call arrangemon to
-	 * re-arrange client windows according to the the layout. */
+	 * re-arrange client windows according to the layout. */
 	if (m) {
 		arrangemon(m);
 		/* The one additional thing we do when given a specific monitor is to call restack.
@@ -1742,7 +1742,7 @@ checkotherwm(void)
  * @calls cleanupmon to tear down each monitor
  * @calls drw_cur_free to free all mouse cursor options
  * @calls drw_free to free the drawable
- * @calls free to memory used by the the colour schemes
+ * @calls free to memory used by the colour schemes
  *
  * Internal call stack:
  *    main -> cleanup
@@ -3911,8 +3911,8 @@ monocle(Monitor *m)
 		snprintf(m->ltsymbol, sizeof m->ltsymbol, "[%d]", n);
 	/* This just loops through all tiled clients and resizes them to take up the entire window
 	 * area. Note that this does not have anything to do with which window is shown on top, that
-	 * is determined by the the window that has focus which will be above other tiled windows in
-	 * the stack.
+	 * is determined by the window that has focus which will be above other tiled windows in the
+	 * stack.
 	 */
 	for (c = nexttiled(m->clients); c; c = nexttiled(c->next))
 		resize(c, m->wx, m->wy, m->ww - 2 * c->bw, m->wh - 2 * c->bw, 0);
@@ -4627,7 +4627,7 @@ restack(Monitor *m)
 
 /* The run function is what starts the event handler, which is the heart of dwm.
  *
- * The the event handler will keep going until:
+ * The event handler will keep going until:
  *    - a fatal error occurs or
  *    - the user triggers the quit function which sets the running variable to 0
  *
@@ -5137,7 +5137,7 @@ setmfact(const Arg *arg)
 	 * following the change to the master / stack factor. In principle this could have been a
 	 * call to arrangemon(selmon) as all that is needed is for the clients to be tiled again.
 	 *
-	 * The call to arrange will result in subsequent calls to showhide arrangemon, restack and
+	 * The call to arrange will result in subsequent calls to showhide, arrangemon, restack and
 	 * drawbar to redraw the bar. While not strictly necessary in this case the performance
 	 * overhead is negligible and arrange is a catch all that can prevent obscure issues.
 	 */

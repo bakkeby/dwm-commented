@@ -117,8 +117,8 @@ static const char *colors[][3]      = {
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 
 /* This array controls the client rules which consists of three rule matching filters (the class,
- * instance and title) and four rule options (tags, whether the client is floating or not and the
- * monitor it is supposed to be start on).
+ * instance and title) and three rule options (tags, whether the client is floating or not and the
+ * monitor it is supposed to start on).
  *
  * Refer to the writeup of the applyrules function for more details on this.
  */
@@ -138,7 +138,7 @@ static const Rule rules[] = {
  * vs the stack area for the tile layout. Refer to the writeup for the setmfact function for more
  * details. */
 static const float mfact     = 0.55; /* factor of master area size [0.05..0.95] */
-/* The nmaster variable controls the number of clients that are placed in the the master area when
+/* The nmaster variable controls the number of clients that are placed in the master area when
  * tiled. Refer to the incnmaster function writeup for more details. */
 static const int nmaster     = 1;    /* number of clients in master area */
 /* This controls whether or not the window manager will respect the size hints of a client window
