@@ -1494,7 +1494,7 @@ attach(Client *c)
  *
  * The stacking order is a linked list of client structures where one client refers to the next.
  * This list is primarily used:
- *    - for managing the order in which client windows placed on top of each other
+ *    - for managing the order in which client windows are placed on top of each other
  *
  * Refer to the writeup for the attach function for usage warnings.
  *
@@ -5381,7 +5381,7 @@ setup(void)
 	updatestatus();
 
 	/* Supporting window for NetWMCheck. In order to be taken seriously and to be considered as
-	 * a valid, complianet and proper window manager we need to have a dummy window representing
+	 * a valid, compliant and proper window manager we need to have a dummy window representing
 	 * the window manager.
 	 *
 	 * As per https://specifications.freedesktop.org/wm-spec/1.3/ar01s03.html we have that:
@@ -6852,10 +6852,10 @@ updatewindowtype(Client *c)
 	 */
 	Atom state = getatomprop(c, netatom[NetWMState]);
 
-	/* This reads the property value of _NET_WM_WINDOW_TYPE_DIALOG, e.g.
+	/* This reads the property value of _NET_WM_WINDOW_TYPE, e.g.
 	 *
 	 *    $ xprop | grep _NET_WM_WINDOW_TYPE
-	 *    __NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DIALOG
+	 *    _NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_DIALOG
 	 */
 	Atom wtype = getatomprop(c, netatom[NetWMWindowType]);
 
