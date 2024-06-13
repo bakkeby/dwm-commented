@@ -6418,7 +6418,7 @@ updatebarpos(Monitor *m)
  *    main -> cleanup -> unmanage -> updateclientlist
  */
 void
-updateclientlist()
+updateclientlist(void)
 {
 	Client *c;
 	Monitor *m;
