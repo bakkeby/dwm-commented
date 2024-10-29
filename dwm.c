@@ -491,8 +491,6 @@
 /* This macro returns true if any of the given client's tags is on any of the tags currently being
  * viewed on the monitor. */
 #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
-/* This calculates the number of items of an array. */
-#define LENGTH(X)               (sizeof X / sizeof X[0])
 /* The MOUSEMASK macro is used in the movemouse and resizemouse user functions and it indicates
  * that we are interested in receiving events when the mouse cursor moves in addition to when the
  * button is released. */

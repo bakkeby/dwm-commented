@@ -27,100 +27,57 @@
  * @see https://rosettacode.org/wiki/UTF-8_encode_and_decode
  */
 #define UTF_INVALID 0xFFFD
-#define UTF_SIZ     4
-
-/* These arrays contain binary values that relate to the UTF-8 format. */
-static const unsigned char utfbyte[UTF_SIZ + 1] = {0x80,    0, 0xC0, 0xE0, 0xF0};
-static const unsigned char utfmask[UTF_SIZ + 1] = {0xC0, 0x80, 0xE0, 0xF0, 0xF8};
-static const long utfmin[UTF_SIZ + 1] = {       0,    0,  0x80,  0x800,  0x10000};
-static const long utfmax[UTF_SIZ + 1] = {0x10FFFF, 0x7F, 0x7FF, 0xFFFF, 0x10FFFF};
-
-/* Internal function to decode a single byte.
- *
- * @called_from utf8decode in relation to validating and decoding UTF-8 text
- *
- * Internal call stack:
- *    ~ -> drawbar -> drw_text -> utf8decode -> utf8decodebyte
- */
-static long
-utf8decodebyte(const char c, size_t *i)
-{
-	/* This loops through all the UTF-8 bytes and byte masks in the corresponding arrays and
-	 * checks if the character falls under one of the four buckets. */
-	for (*i = 0; *i < (UTF_SIZ + 1); ++(*i))
-		if (((unsigned char)c & utfmask[*i]) == utfbyte[*i])
-			/* If a character with the mask applied matched the entry in utfbyte then return the
-			 * chracter less the bits of the mask. */
-			return (unsigned char)c & ~utfmask[*i];
-	return 0;
-}
-
-/* Internal function to validate that a UTF-8 value is between certain values.
- *
- * @called_from utf8decode in relation to validating and decoding UTF-8 text
- *
- * Internal call stack:
- *    ~ -> drawbar -> drw_text -> utf8decode -> utf8validate
- */
-static size_t
-utf8validate(long *u, size_t i)
-{
-	/* This checks whether the given value is between the byte ranges defined for each of the four
-	 * buckets. */
-	if (!BETWEEN(*u, utfmin[i], utfmax[i]) || BETWEEN(*u, 0xD800, 0xDFFF))
-		*u = UTF_INVALID;
-	for (i = 1; *u > utfmax[i]; ++i)
-		;
-	return i;
-}
 
 /* This is a function that works out how many bytes a given UTF-8 character spans.
  *
  * @called_from drw_text to get the number of bytes a multi-byte UTF-8 character uses
- * @calls utf8decodebyte to work out what data a UTF-8 byte holds
- * @calls utf8validate to check a decoded UTF-8 character if the byte length could not be derived
  *
  * Internal call stack:
  *    ~ -> drawbar -> drw_text -> utf8decode
  */
-static size_t
-utf8decode(const char *c, long *u, size_t clen)
+static int
+utf8decode(const char *s_in, long *u, int *err)
 {
-	size_t i, j, len, type;
-	long udecoded;
+	static const unsigned char lens[] = {
+		/* 0XXXX */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		/* 10XXX */ 0, 0, 0, 0, 0, 0, 0, 0,  /* invalid */
+		/* 110XX */ 2, 2, 2, 2,
+		/* 1110X */ 3, 3,
+		/* 11110 */ 4,
+		/* 11111 */ 0,  /* invalid */
+	};
+	static const unsigned char leading_mask[] = { 0x7F, 0x1F, 0x0F, 0x07 };
+	static const unsigned int overlong[] = { 0x0, 0x80, 0x0800, 0x10000 };
 
+	const unsigned char *s = (const unsigned char *)s_in;
+	int len = lens[*s >> 3];
 	*u = UTF_INVALID;
 	if (!clen)
 		return 0;
 
-	/* Decode the first byte of the character string. */
-	udecoded = utf8decodebyte(c[0], &len);
-
-	/* If this is a single-byte UTF-8 character then the length of 1 (byte). */
-	if (!BETWEEN(len, 1, UTF_SIZ))
+	/* If the byte code has an invalid length as per the lens array, then treat it as an error. */
+	*err = 1;
+	if (len == 0)
 		return 1;
 
-	/* Otherwise keep looping through bytes until we find the last one. The variable j keeps track
-	 * of the number of bytes we have checked.  */
-	for (i = 1, j = 1; i < clen && j < len; ++i, ++j) {
-		udecoded = (udecoded << 6) | utf8decodebyte(c[i], &type);
-		/* If type is a non-zero value then we know how many bytes the UTF-8 character holds and we
-		 * can return that directly. The type value will be positive if the utf8decodebyte function
-		 * had to loop over over more than one byte / mask check. */
-		if (type)
-			return j;
+	/* Otherwise keep looping through bytes until we find the last one. */
+	long cp = s[0] & leading_mask[len - 1];
+	for (int i = 1; i < len; ++i) {
+		if (s[i] == '\0' || (s[i] & 0xC0) != 0x80)
+			return i;
+		cp = (cp << 6) | (s[i] & 0x3F);
 	}
-	/* If the for loop above exited prematurely then that suggests that the multi-byte UTF-8
-	 * character is incomplete. We return 0 in this case as we can't draw half a character. This
-	 * will also be in the event that we have a multi-byte character with more than 4 bytes. */
-	if (j < len)
-		return 0;
 
-	/* If we have come this far then run the decoded value through utf8validate to get the length
-	 * of the character. */
-	*u = udecoded;
-	utf8validate(u, len);
+	/* If the encoding is invalid then we return the length here. The err variable is still set to
+	 * 1 so it will be treated as an error. */
 
+	/* out of range, surrogate, overlong encoding */
+	if (cp > 0x10FFFF || (cp >> 11) == 0x1B || cp < overlong[len - 1])
+		return len;
+
+	/* Clear the error flag and return the length. */
+	*err = 0;
+	*u = cp;
 	return len;
 }
 
@@ -593,8 +550,6 @@ int
 drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lpad, const char *text, int invert)
 {
 	/* Initialising a series of variables:
-	 *    i - iterator used in the context of checking known glyphs that we know there exists no
-	 *        font for
 	 *    ty - text y position, used in the context of fallback fonts that may have a different
 	 *         height to the primary font
 	 *    ellipsis_x - the position that the ellipsis will be drawn at, if needed
@@ -604,14 +559,17 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 	 *    tmpw - temporary width holding the width of the last UTF-8 character checked
 	 *    ew - represents the extent width, as in width of a UTF-8 character
 	 *    d - holds the XftDraw structure used in the event that text is to be drawn
+	 *    hash, h0, h1 - these hash variables are used to make a decoded UTF-8 code point fit in
+	 *                   the nomatches array for lookup purposes
 	 *    usedfont - the currently used font
 	 *    curfont - the font that was found to hold a glyph for the given UTF-8 character
 	 *    nextfont - the next font to use
 	 *    utf8strlen - the number of continuous bytes that can be drawn together with the used font
 	 *    utf8charlen - the number of bytes in the current multi-byte UTF-8 character
+	 *    utf8err - indicates whether a UTF-8 code point could be decoded or not
 	 *    render - whether to render text or just calculate the width of the text
 	 *    utf8codepoint - represents the code point for the current UTF-8 character
-	 *    utf8str -
+	 *    utf8str - used to hold the position in the text string
 	 *    fccharset - used in the context of loading additional fallback fonts
 	 *    fcpattern - used in the context of loading additional fallback fonts
 	 *    match - used in the context of loading additional fallback fonts
@@ -619,11 +577,11 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 	 *    charexists - internal flag indicating whether a character exists within the current fonts
 	 *    overflow - internal flag indicating whether the text is too long to fit in the given width
 	 */
-	int i, ty, ellipsis_x = 0;
-	unsigned int tmpw, ew, ellipsis_w = 0, ellipsis_len;
+	int ty, ellipsis_x = 0;
+	unsigned int tmpw, ew, ellipsis_w = 0, ellipsis_len, hash, h0, h1;
 	XftDraw *d = NULL;
 	Fnt *usedfont, *curfont, *nextfont;
-	int utf8strlen, utf8charlen, render = x || y || w || h;
+	int utf8strlen, utf8charlen, utf8err, render = x || y || w || h;
 	long utf8codepoint = 0;
 	const char *utf8str;
 	FcCharSet *fccharset;
@@ -633,13 +591,15 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 	int charexists = 0, overflow = 0;
 	/* Keep track of a couple codepoints for which we have no match. This is a performance
 	 * optimisation to avoid spending wasteful time searching for a font that does not exit over
-	 * and over again. Here we reserve space to hold up to 64 known code points (characters) for
-	 * which we know there is no font that has a glyph for that character. */
-	enum { nomatches_len = 64 };
-	static struct { long codepoint[nomatches_len]; unsigned int idx; } nomatches;
-	/* The actual width of the ellipsis. This is static so that we will only ever have to calculate
-	 * the width of the "..." string more than once. */
-	static unsigned int ellipsis_width = 0;
+	 * and over again. Here we reserve space to hold up to 128 known code points (characters) for
+	 * which we know there is no font that has a glyph for that character.
+	 * The ellipsis_width variable holds the ellipsis' rendered width (in pixels).
+	 * The invalid_width variable holds the rendered width (in pixels) of an invalid character
+	 * representation.
+	 * These variables are static so that we will only ever have to calculate them once.
+	 */
+	static unsigned int nomatches[128], ellipsis_width, invalid_width;
+	static const char invalid[] = "�";
 
 	/* General guard to prevent anything bad from happening in the event that this function is
 	 * called before we have everything we need set up (like colour schemes, fonts, etc.). */
@@ -679,12 +639,15 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 	 * calculated once for the as long as the program runs. */
 	if (!ellipsis_width && render)
 		ellipsis_width = drw_fontset_getwidth(drw, "...");
+	/* As above here we calculate the rendered width of an invalid character (in pixels). */
+	if (!invalid_width && render)
+		invalid_width = drw_fontset_getwidth(drw, invalid);
 
 	/* Keep doing the below until we run out of text or we run out of space to draw the text. */
 	while (1) {
 		/* This is the first loop or we have previously drawn a character or a set of characters.
-		 * reset the various with variables back to 0. */
-		ew = ellipsis_len = utf8strlen = 0;
+		 * Reset the various width variables back to 0. */
+		ew = ellipsis_len = utf8err = utf8charlen = utf8strlen = 0;
 		/* We set utf8str to be the text (or what is left of it). This holds a reference to where
 		 * we are in the text string before we enter the while loop below. This is later used when
 		 * drawing the text after we have exited the while loop which traverses through the text
@@ -700,7 +663,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 			 * named as it is due to that text is stored in an array of char and a char in c holds
 			 * the same amount of data as one byte. The call to utf8decode also gives us the
 			 * utf8codepoint which represents the actual Unicode character. */
-			utf8charlen = utf8decode(text, &utf8codepoint, UTF_SIZ);
+			utf8charlen = utf8decode(text, &utf8codepoint, &utf8err);
 			/* Now we loop through all fonts, starting at the primary font. Notably this means that
 			 * the primary font is always going to take precedence over fallback fonts provided that
 			 * the primary font has a glyph for the current character. */
@@ -750,14 +713,16 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 							utf8strlen = ellipsis_len;
 					} else if (curfont == usedfont) {
 						/* If the found font is the same as what we used for the previous character
-						 * then we can draw these consecutively. Just add the values to the running
-						 * total of number of characters that can be drawn and the combined extent
-						 * width. */
-						utf8strlen += utf8charlen;
-						/* This moves the text cursor to the next UTF-8 character by moving forward
-						 * the number of bytes the current character has. */
+						 * then we can draw these consecutively.. This moves the text cursor to the
+						 * next UTF-8 character by moving forward the number of bytes the current
+						 * character has. */
 						text += utf8charlen;
-						ew += tmpw;
+
+						/* Increment running total of number of characters that can be drawn and
+						 * the combined extent width, but only in the event that there were no
+						 * errors when decoding the UTF-8 character. */
+						utf8strlen += utf8err ? 0 : utf8charlen;
+						ew += utf8err ? 0 : tmpw;
 					} else {
 						/* Oh, we are in a situation where the next UTF-8 character to be drawn is
 						 * for another font. Before we can do that though we need to draw the text
@@ -775,7 +740,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 			/* If we have exceeded the available width (overflow), or the character does not exist
 			 * in any of the fonts loaded, or in the case that we need to change to another font
 			 * then we need to break out of the while loop. */
-			if (overflow || !charexists || nextfont)
+			if (overflow || !charexists || nextfont || utf8err)
 				break;
 			/* Otherwise we set charexists to 0. */
 			else
@@ -801,6 +766,15 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 			 * width accordingly. */
 			x += ew;
 			w -= ew;
+		}
+
+		/* If we have encountered any bad UTF-8 encoding then print the designated "invalid"
+		 * character in place of the decoded character. */
+		if (utf8err && (!render || invalid_width < w)) {
+			if (render)
+				drw_text(drw, x, y, w, h, 0, invalid, invert);
+			x += invalid_width;
+			w -= invalid_width;
 		}
 
 		/* If we are drawing text and we have run out of space, then draw the ellipsis at the last
@@ -834,6 +808,17 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 					/* Here we have a goto statement that skips most of the code below. */
 					goto no_match;
 			}
+
+			/* This hashes the UTF-8 code point in order for it to fit and be looked up in the
+			 * nomatches array. */
+			hash = (unsigned int)utf8codepoint;
+			hash = ((hash >> 16) ^ hash) * 0x21F0AAAD;
+			hash = ((hash >> 15) ^ hash) * 0xD35A2D97;
+			h0 = ((hash >> 15) ^ hash) % LENGTH(nomatches);
+			h1 = (hash >> 17) % LENGTH(nomatches);
+			/* avoid expensive XftFontMatch call when we know we won't find a match */
+			if (nomatches[h0] == utf8codepoint || nomatches[h1] == utf8codepoint)
+				goto no_match;
 
 			/* Here we create a character set and add our code point to that character set.
 			 * We then use this to make the Xft library search for a font that matches the
@@ -880,7 +865,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 					 * code point to the nomatches array so that we don't waste more time searching
 					 * for this character. */
 					xfont_free(usedfont);
-					nomatches.codepoint[++nomatches.idx % nomatches_len] = utf8codepoint;
+					nomatches[nomatches[h0] ? h1 : h0] = utf8codepoint;
 no_match:
 					/* Set the used font back to the primary font. */
 					usedfont = drw->fonts;

@@ -9,6 +9,8 @@
 /* Macro that is true if a value is between two values. If used with a function call then that
  * call will happen twice due to how the macro unfolds in the code. */
 #define BETWEEN(X, A, B)        ((A) <= (X) && (X) <= (B))
+/* This calculates the number of items of an array. */
+#define LENGTH(X)               (sizeof X / sizeof X[0])
 
 /* Function declarations. */
 void die(const char *fmt, ...);
