@@ -52,8 +52,6 @@ utf8decode(const char *s_in, long *u, int *err)
 	const unsigned char *s = (const unsigned char *)s_in;
 	int len = lens[*s >> 3];
 	*u = UTF_INVALID;
-	if (!clen)
-		return 0;
 
 	/* If the byte code has an invalid length as per the lens array, then treat it as an error. */
 	*err = 1;
@@ -802,12 +800,6 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 			/* Here we go through known cases of code points that have no matching fonts. This is
 			 * a performance optimisation that voids the need to waste time searching for a font
 			 * that offers a certain glyph and there are no such font in the system. */
-			for (i = 0; i < nomatches_len; ++i) {
-				/* avoid calling XftFontMatch if we know we won't find a match */
-				if (utf8codepoint == nomatches.codepoint[i])
-					/* Here we have a goto statement that skips most of the code below. */
-					goto no_match;
-			}
 
 			/* This hashes the UTF-8 code point in order for it to fit and be looked up in the
 			 * nomatches array. */
@@ -818,6 +810,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 			h1 = (hash >> 17) % LENGTH(nomatches);
 			/* avoid expensive XftFontMatch call when we know we won't find a match */
 			if (nomatches[h0] == utf8codepoint || nomatches[h1] == utf8codepoint)
+				/* Here we have a goto statement that skips most of the code below. */
 				goto no_match;
 
 			/* Here we create a character set and add our code point to that character set.

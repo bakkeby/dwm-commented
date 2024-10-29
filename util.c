@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +23,7 @@
  * @calls vfprintf
  * @calls va_end
  * @calls strlen to get the length of the error string
- * @calls perror to print the description of the error that occurred
+ * @calls strerror to look up the description of the error that occurred
  * @calls fputc to write a character to standard err
  * @calls exit to stop the process
  * @see https://www.tutorialspoint.com/c_standard_library/c_macro_va_start.htm
@@ -50,6 +51,9 @@ void
 die(const char *fmt, ...)
 {
 	va_list ap;
+	int saved_errno;
+
+	saved_errno = errno;
 
 	/* Note how the function ends with , ... - this means that the function takes variable
 	 * arguments. Have a look at the tutorial on these macros for more information, but the gist
@@ -64,14 +68,9 @@ die(const char *fmt, ...)
 	va_end(ap);
 
 	/* If the error string ends with a colon then print the error that happened as well. */
-	if (fmt[0] && fmt[strlen(fmt)-1] == ':') {
-		fputc(' ', stderr);
-		/* The perror function displays the description of the error that corresponds to an error
-		 * code stored in the system variable errno. */
-		perror(NULL);
-	} else {
-		fputc('\n', stderr);
-	}
+	if (fmt[0] && fmt[strlen(fmt)-1] == ':')
+		fprintf(stderr, " %s", strerror(saved_errno));
+	fputc('\n', stderr);
 
 	/* Stop the process passing 1 to exit to signify failure. */
 	exit(1);
