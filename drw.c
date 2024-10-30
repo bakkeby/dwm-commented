@@ -618,6 +618,13 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 		 * may have been drawn before. */
 		XSetForeground(drw->dpy, drw->gc, drw->scheme[invert ? ColFg : ColBg].pixel);
 		XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
+
+		/* Cover for an edge case where the remaining width is less than the left padding in which
+		 * we just skip to the end. Without this it is possible to end up with an unsigned integer
+		 * underflow (i.e. w ending up very very large) and text potentially being overwritten. */
+		if (w < lpad)
+			return x + w;
+
 		/* We prepare the XftDraw structure that will be used to draw the text later. */
 		d = XftDrawCreate(drw->dpy, drw->drawable,
 		                  DefaultVisual(drw->dpy, drw->screen),
