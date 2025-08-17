@@ -4056,16 +4056,8 @@ movemouse(const Arg *arg)
 		case MotionNotify:
 			/* Motion notify events can come in quick, very quick in fact, so we skip
 			 * events received between certain intervals.
-			 *
-			 * The (1000 / 60) means that we want to process 60 events per second. This
-			 * corresponds to processing one event per 16.66 milliseconds.
-			 *
-			 * The value is a good middle-ground in terms of performance on older systems
-			 * and responsiveness. Some people may find that the interaction is not
-			 * entirely smooth and they can try increasing this to process 120 events per
-			 * second (1000 / 120) which means one event every 8.33 milliseconds.
 			 */
-			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
+			if ((ev.xmotion.time - lasttime) <= (1000 / refreshrate))
 				continue;
 			lasttime = ev.xmotion.time; /* Store the previous time for comparison above */
 
@@ -4474,16 +4466,8 @@ resizemouse(const Arg *arg)
 		case MotionNotify:
 			/* Motion notify events can come in quick, very quick in fact, so we skip
 			 * events received between certain intervals.
-			 *
-			 * The (1000 / 60) means that we want to process 60 events per second. This
-			 * corresponds to processing one event per 16.66 milliseconds.
-			 *
-			 * The value is a good middle-ground in terms of performance on older systems
-			 * and responsiveness. Some people may find that the interaction is not
-			 * entirely smooth and they can try increasing this to process 120 events per
-			 * second (1000 / 120) which means one event every 8.33 milliseconds.
 			 */
-			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
+			if ((ev.xmotion.time - lasttime) <= (1000 / refreshrate))
 				continue;
 			lasttime = ev.xmotion.time; /* Store the previous time for comparison above */
 

@@ -147,6 +147,29 @@ static const int resizehints = 1;    /* 1 means respect size hints in tiled resi
 /* The lockfullscreen variable controls whether or not focus is allowed to drift from a fullscreen
  * window. Refer to the writeup of the focusstack function for which this feature is isolated. */
 static const int lockfullscreen = 1; /* 1 will force focus on the fullscreen window */
+/* The refreshrate option controls how often dwm should be processing mouse movement events when
+ * moving or resizing windows.
+ *
+ * When moving the mouse the X server is going to send a flood of MotionNotify events, the rate
+ * at which may depend on the rate at which the mouse sends signals.
+ *
+ * A value of 120 means that we want to process 120 events per second. In other words we have that
+ * dwm should process one mouse movement event every 8.33 milliseconds (1000 ms / 120).
+ *
+ * This value used to be hardcoded as 60 which was a good middle-ground in terms of responsiveness
+ * and performance on older systems.
+ *
+ * The mouse interaction with windows would not be entirely smooth and the refresh rate was made
+ * configurable with a default of 120 updates per second.
+ *
+ * A general misconception here is that people often confuse this with the refresh rate of their
+ * monitor. In practice this controls whether to process or skip MotionNotify events, and setting
+ * this too high can lead to situations where the processing time of the interaction between the
+ * window manager and the X server takes longer than the update interval. When this happens every
+ * motion event ends up being older than the update interval and thus being processed resulting
+ * in an ever increasing lag the longer the mouse action goes on for.
+ */
+static const int refreshrate = 120;  /* refresh rate (per second) for client move/resize */
 
 /* This array contains the list of available layout options.
  *
