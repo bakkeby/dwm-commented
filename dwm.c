@@ -5790,7 +5790,7 @@ tile(Monitor *m)
 	 *    i - iterator, represents number of clients processed
 	 *    n - total number of clients
 	 *    h - calculated client height
-	 *    mw - calculated monitor width
+	 *    mw - calculated width of the master area
 	 *    my - calculated master area y position relative to the window area
 	 *    ty - calculated stack area y position relative to window area (tile y, the naming is
 	 *         likely a remnant from a time before the nmaster patch was applied upstream -
