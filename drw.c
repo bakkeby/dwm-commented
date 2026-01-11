@@ -407,8 +407,7 @@ drw_clr_create(Drw *drw, Clr *dest, const char *clrname)
 	 */
 }
 
-/* Wrapper to create color schemes. The caller has to call free(3) on the
- * returned color scheme when done using it.
+/* Create color schemes.
  *
  * A colour scheme contains multiple (XftColor) colours. In dwm a colour scheme contains by default
  * three colours; the forground colour, the background colour and the border colour.
@@ -431,7 +430,7 @@ drw_scm_create(Drw *drw, const char *clrnames[], size_t clrcount)
 	 * and use the returned colour directly. The rest are merely guards in case something is
 	 * not as it should be. The last ecalloc allocates memory to hold the number of colours in
 	 * the colour scheme. */
-	if (!drw || !clrnames || clrcount < 2 || !(ret = ecalloc(clrcount, sizeof(XftColor))))
+	if (!drw || !clrnames || clrcount < 2 || !(ret = ecalloc(clrcount, sizeof(Clr))))
 		return NULL;
 
 	/* Loop through all the colours and create them while storing them in the XftColor array
@@ -440,6 +439,46 @@ drw_scm_create(Drw *drw, const char *clrnames[], size_t clrcount)
 		drw_clr_create(drw, &ret[i], clrnames[i]);
 	/* Return the created colour scheme. */
 	return ret;
+}
+
+/* Free individual Xft colour.
+ *
+ * @calls XftColorFree to free the Xft colour
+ * @calls DefaultVisual https://linux.die.net/man/3/defaultvisual
+ * @calls DefaultColormap https://linux.die.net/man/3/defaultcolormap
+ *
+ * Internal call stack:
+ *    main -> cleanup -> drw_scm_free
+ */
+void
+drw_clr_free(Drw *drw, Clr *c)
+{
+	if (!drw || !c)
+		return;
+
+	/* c is typedef XftColor Clr */
+	XftColorFree(drw->dpy, DefaultVisual(drw->dpy, drw->screen),
+	             DefaultColormap(drw->dpy, drw->screen), c);
+}
+
+/* Free colour schemes.
+ *
+ * @calls drw_clr_free to free individual colours
+ *
+ * Internal call stack:
+ *    main -> cleanup -> drw_scm_free
+ */
+void
+drw_scm_free(Drw *drw, Clr *scm, size_t clrcount)
+{
+	size_t i;
+
+	if (!drw || !scm)
+		return;
+
+	/* Loop through all colours of a colour scheme and call drw_clr_free to free them. */
+	for (i = 0; i < clrcount; i++)
+		drw_clr_free(drw, &scm[i]);
 }
 
 /* Function to set or change the given font set.
