@@ -479,6 +479,7 @@ drw_scm_free(Drw *drw, Clr *scm, size_t clrcount)
 	/* Loop through all colours of a colour scheme and call drw_clr_free to free them. */
 	for (i = 0; i < clrcount; i++)
 		drw_clr_free(drw, &scm[i]);
+	free(scm);
 }
 
 /* Function to set or change the given font set.

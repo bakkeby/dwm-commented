@@ -1784,10 +1784,8 @@ cleanup(void)
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
 	/* Loop through and free each colour scheme */
-	for (i = 0; i < LENGTH(colors); i++) {
+	for (i = 0; i < LENGTH(colors); i++)
 		drw_scm_free(drw, scheme[i], 3);
-		free(scheme[i]);
-	}
 	/* Free the memory used for the scheme struct as well */
 	free(scheme);
 	/* Destroy the supporting window, refer to the setup function for more details on this */
