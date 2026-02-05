@@ -3079,16 +3079,34 @@ getatomprop(Client *c, Atom prop)
 	 *    da - dummy atom
 	 */
 	int di;
-	unsigned long dl;
+	unsigned long nitems, dl;
 	unsigned char *p = NULL; /* The prop_return variable for the of XGetWindowProperty call. */
 	Atom da, atom = None;
 
 	/* This reads the given window property. If the property could be read successfully then
 	 * we enter the if statement, otherwise we end up returning a default atom of None. */
 	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, XA_ATOM,
-		&da, &di, &dl, &dl, &p) == Success && p) {
-		/* Capture the value of the prop_return to our local atom which we will return. */
-		atom = *(Atom *)p;
+		&da, &di, &nitems, &dl, &p) == Success && p) {
+
+		/* If the property exists but has zero elements (length 0), Xlib returns Success and sets
+		 * p to a valid, non-NULL memory address containing a single null byte.
+		 *
+		 * The number of items (nitems) in this case would be 0. While Xlib guarantees that p is
+		 * safe to read as a string (being null-terminated), it does not guarantee that it is safe
+		 * to read as an Atom (i.e. an unsigned long).
+		 *
+		 * The Atom type is a typedef for unsigned long. Reading an Atom (which thus will either
+		 * likely be 4 or 8 bytes) from a 1-byte allocated buffer results in a heap buffer
+		 * overflow. Since property content is user controlled, this allows any client to trigger
+		 * an out of bounds read simply by setting a property with format 32 and length 0.
+		 *
+		 * In order to avoid this, we check that the number of items returned is greater than zero
+		 * before dereferencing the pointer.
+		 */
+		if (nitems > 0)
+			/* Capture the value of the prop_return to our local atom which we will return. */
+			atom = *(Atom *)p;
+
 		/* Free the prop_return variable. */
 		XFree(p);
 	}
