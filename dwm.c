@@ -4920,22 +4920,20 @@ setfocus(Client *c)
 	 * colour as that client is selected, but the input focus will remain in the previous
 	 * window (as demonstrated by typing something).
 	 */
-	if (!c->neverfocus) {
+	if (!c->neverfocus)
 		/* This is what gives input focus to the client, allowing you to type and otherwise
 		 * interact with it. */
 		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
-		/* This sets the _NET_ACTIVE_WINDOW property for the root window to refer to the
-		 * window that is active (has input focus).
-		 *
-		 * This can be seen by running this command:
-		 *
-		 * $ xprop -root | grep _NET_ACTIVE_WINDOW
-		 * _NET_ACTIVE_WINDOW(WINDOW): window id # 0x5000002
-		 */
-		XChangeProperty(dpy, root, netatom[NetActiveWindow],
-			XA_WINDOW, 32, PropModeReplace,
-			(unsigned char *) &(c->win), 1);
-	}
+	/* This sets the _NET_ACTIVE_WINDOW property for the root window to refer to the
+	 * window that is active (has input focus).
+	 *
+	 * This can be seen by running this command:
+	 *
+	 * $ xprop -root | grep _NET_ACTIVE_WINDOW
+	 * _NET_ACTIVE_WINDOW(WINDOW): window id # 0x5000002
+	 */
+	XChangeProperty(dpy, root, netatom[NetActiveWindow], XA_WINDOW, 32,
+		PropModeReplace, (unsigned char *) &(c->win), 1);
 	/* This tells the window to take focus by sending a client message event with the
 	 * WM_TAKE_FOCUS message type. The event is only sent if the window supports that protocol.
 	 */
