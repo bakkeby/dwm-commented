@@ -3168,11 +3168,11 @@ getstate(Window w)
 	/* This reads the WM_STATE property of a given window. If the property could not be read
 	 * then -1 will be returned. */
 	if (XGetWindowProperty(dpy, w, wmatom[WMState], 0L, 2L, False, wmatom[WMState],
-		&real, &format, &n, &extra, (unsigned char **)&p) != Success)
+		&real, &format, &n, &extra, &p) != Success)
 		return -1;
 	/* If the property had a value then set that as the function's return value. */
-	if (n != 0)
-		result = *p;
+	if (n != 0 && format == 32)
+		result = *(long *)p;
 	/* Data returned by XGetWindowProperty must be freed by the caller. */
 	XFree(p);
 
