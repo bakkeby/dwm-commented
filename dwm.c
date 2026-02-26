@@ -3070,15 +3070,14 @@ focusstack(const Arg *arg)
 Atom
 getatomprop(Client *c, Atom prop)
 {
-	/* Here we have three dummy variables that we need to pass to XGetWindowProperty but the
+	/* Here we have two dummy variables that we need to pass to XGetWindowProperty but the
 	 * values that are written we simply ignore.
 	 *
 	 * The dummy variables are:
-	 *    di - dummy integer
 	 *    dl - dummy unsigned long
 	 *    da - dummy atom
 	 */
-	int di;
+	int format;
 	unsigned long nitems, dl;
 	unsigned char *p = NULL; /* The prop_return variable for the of XGetWindowProperty call. */
 	Atom da, atom = None;
@@ -3086,7 +3085,7 @@ getatomprop(Client *c, Atom prop)
 	/* This reads the given window property. If the property could be read successfully then
 	 * we enter the if statement, otherwise we end up returning a default atom of None. */
 	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, XA_ATOM,
-		&da, &di, &nitems, &dl, &p) == Success && p) {
+		&da, &format, &nitems, &dl, &p) == Success && p) {
 
 		/* If the property exists but has zero elements (length 0), Xlib returns Success and sets
 		 * p to a valid, non-NULL memory address containing a single null byte.
@@ -3103,9 +3102,9 @@ getatomprop(Client *c, Atom prop)
 		 * In order to avoid this, we check that the number of items returned is greater than zero
 		 * before dereferencing the pointer.
 		 */
-		if (nitems > 0)
+		if (nitems > 0 && format == 32)
 			/* Capture the value of the prop_return to our local atom which we will return. */
-			atom = *(Atom *)p;
+			atom = *(long *)p;
 
 		/* Free the prop_return variable. */
 		XFree(p);
