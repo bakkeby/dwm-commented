@@ -4796,6 +4796,13 @@ sendmon(Client *c, Monitor *m)
 	/* Add the client to the target monitor's stacking order list. */
 	attachstack(c);
 
+	/* If a fullscreen client is being moved to another monitor, then resize that client
+	 * to the size of the new monitor given that monitor dimensions may differ. Note that
+	 * resizeclient is used here directly - this is to avoid size hints being taken into
+	 * account when resizing the fullscreen window. */
+	if (c->isfullscreen)
+		resizeclient(c, m->mx, m->my, m->mw, m->mh);
+
 	/* Apply a general focus to focus on the next client on the current monitor. Note that the
 	 * monitor focus does not follow the client being moved. */
 	focus(NULL);
