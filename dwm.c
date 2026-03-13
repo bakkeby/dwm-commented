@@ -1621,7 +1621,7 @@ buttonpress(XEvent *e)
 		/* If the click was to the right of the layout symbol then we need to check if the
 		 * click was on the status text, which is drawn to the far right of the bar. We do
 		 * not actually know the width of the client window title */
-		else if (ev->x > selmon->ww - (int)TEXTW(stext))
+		else if (ev->x > selmon->ww - (int)TEXTW(stext) + lrpad - 2)
 			click = ClkStatusText;
 		/* The click was not to the left and not to the right, so the click must have been
 		 * on the window title. */
