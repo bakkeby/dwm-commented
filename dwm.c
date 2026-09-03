@@ -5566,7 +5566,7 @@ seturgent(Client *c, int urg)
 /* This is a recursive function that moves client windows into or out of view depending on whether
  * the tag(s) they are shown on are viewed or not.
  *
- * Client windows are shown top down when the are moved into view, and are hidden bottom up when
+ * Client windows are shown top down when they are moved into view, and are hidden bottom up when
  * moved out of view.
  *
  * As an example let's say that we have a floating layout with a series of windows that are placed
