@@ -1440,7 +1440,8 @@ arrangemon(Monitor *m)
 {
 	/* This copies the layout symbol of the selected layout to the monitor's layout string,
 	 * which is later used in drawbar when printing the layout symbol on the bar. */
-	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
+	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof(m->ltsymbol) - 1);
+	m->ltsymbol[sizeof(m->ltsymbol) - 1] = '\0';
 
 	/* If floating layout is used then the arrange function will be NULL, otherwise we call
 	 * that arrange function. This will be the tile function or the monocle function depending
@@ -2251,7 +2252,8 @@ createmon(void)
 
 	/* This copies the layout symbol from the first layout into the monitor's layout symbol.
 	 * This is later used when drawing the layout symbol on the bar. */
-	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
+	strncpy(m->ltsymbol, layouts[0].symbol, sizeof(m->ltsymbol) - 1);
+	m->ltsymbol[sizeof(m->ltsymbol) - 1] = '\0';
 
 	/* Return the newly created monitor. */
 	return m;
