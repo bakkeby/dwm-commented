@@ -6653,7 +6653,8 @@ updatenumlockmask(void)
 	numlockmask = 0;
 	/* This retrieves a new modifier mapping structure that contains the keys being used as
 	 * modifiers. */
-	modmap = XGetModifierMapping(dpy);
+	if (!(modmap = XGetModifierMapping(dpy)))
+		return;
 	/* We loop through each modifier */
 	for (i = 0; i < 8; i++)
 		/* and we loop through each key per modifier */
