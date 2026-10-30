@@ -3235,8 +3235,9 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	/* If it is a list of text strings then we need to retrieve it by calling
 	 * XmbTextPropertyToTextList and the returned list needs to be freed when we are
 	 * finished with it. */
-	} else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success && n > 0 && *list) {
-		strncpy(text, *list, size - 1);
+	} else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success) {
+		if (n > 0 && *list)
+			strncpy(text, *list, size - 1);
 		XFreeStringList(list);
 	}
 	/* This is to make sure that the end of the text marks the end of the string, in the event
