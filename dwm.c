@@ -2035,6 +2035,11 @@ configurenotify(XEvent *e)
 
 	/* TODO: updategeom handling sucks, needs to be simplified (famous last words) */
 	if (ev->window == root) {
+		/* A malformed ConfigureNotify with width or height <= 0 can crash dwm. If that
+		 * is the case then we ignore the event. */
+		if (ev->width <= 0 || ev->height <= 0)
+			return;
+
 		/* If the width and height of the event differs from the stored screen width and
 		 * height then we will want do the corrections in the if statement below regardless
 		 * of whether updategeom detects a change in the number of monitors. We could just
