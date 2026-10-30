@@ -5667,6 +5667,7 @@ void
 spawn(const Arg *arg)
 {
 	struct sigaction sa;
+	pid_t pid;
 
 	/* If we are executing the dmenu command then we manipulate the value that we pass to
 	 * dmenu_run via the -m argument by setting it to the selected monitor.
@@ -5700,8 +5701,16 @@ spawn(const Arg *arg)
 	 * it will continue to print an error and call exit to stop the process.
 	 *
 	 * Processes spawned via dwm will have the dwm process as its parent process.
+	 *
+	 * If fork() returns -1 then that means that the new process failed to be created (due to
+	 * resource or process limits). In this case we print an error.
 	 */
-	if (fork() == 0) {
+	if ((pid = fork()) == -1) {
+		fprintf(stderr, "dwm: fork failed: %s\n", strerror(errno));
+		return;
+	}
+
+	if (pid == 0) {
 		/* If we have a connection to the X server then close that before proceeding. */
 		if (dpy)
 			close(ConnectionNumber(dpy));
