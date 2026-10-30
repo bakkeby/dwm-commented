@@ -6697,13 +6697,13 @@ updatesizehints(Client *c)
 
 	/* The base size defines the desired size of the window. */
 	if (size.flags & PBaseSize) {
-		c->basew = size.base_width;
-		c->baseh = size.base_height;
+		c->basew = MAX(0, size.base_width);
+		c->baseh = MAX(0, size.base_height);
 	/* If the hints do not contain any base size flag then we fall back to setting the minimum
 	 * size as the base size. */
 	} else if (size.flags & PMinSize) {
-		c->basew = size.min_width;
-		c->baseh = size.min_height;
+		c->basew = MAX(0, size.min_width);
+		c->baseh = MAX(0, size.min_height);
 	/* If the hints do not contain any minimum size either then we just set the base height and
 	 * width to 0. */
 	} else
@@ -6712,35 +6712,35 @@ updatesizehints(Client *c)
 	/* This sets the resize increment hint, e.g. the window can only be resized horizontally
 	 * with an increment of 24 pixels. */
 	if (size.flags & PResizeInc) {
-		c->incw = size.width_inc;
-		c->inch = size.height_inc;
+		c->incw = MAX(0, size.width_inc);
+		c->inch = MAX(0, size.height_inc);
 	/* If there are no resize increment hints then set these to 0 (no restriction). */
 	} else
 		c->incw = c->inch = 0;
 
 	/* This sets the maximum size of the window. */
 	if (size.flags & PMaxSize) {
-		c->maxw = size.max_width;
-		c->maxh = size.max_height;
+		c->maxw = MAX(0, size.max_width);
+		c->maxh = MAX(0, size.max_height);
 	/* If there is no maximum size then we set these to 0 (no restriction). */
 	} else
 		c->maxw = c->maxh = 0;
 
 	/* This sets the minimum size of the window. */
 	if (size.flags & PMinSize) {
-		c->minw = size.min_width;
-		c->minh = size.min_height;
+		c->minw = MAX(0, size.min_width);
+		c->minh = MAX(0, size.min_height);
 	/* If there is no minimum size restriction then fall back to using the base size as the
 	 * minimum size. */
 	} else if (size.flags & PBaseSize) {
-		c->minw = size.base_width;
-		c->minh = size.base_height;
+		c->minw = MAX(0, size.base_width);
+		c->minh = MAX(0, size.base_height);
 	/* If there is no base size either then set the minimum size to 0 (no restriction). */
 	} else
 		c->minw = c->minh = 0;
 
 	/* This sets the aspect ratio restrictions for the window. */
-	if (size.flags & PAspect) {
+	if ((size.flags & PAspect) && size.min_aspect.x > 0 && size.max_aspect.y > 0) {
 		c->mina = (float)size.min_aspect.y / size.min_aspect.x;
 		c->maxa = (float)size.max_aspect.x / size.max_aspect.y;
 	/* If there is no aspect ratio hint then we set this to 0 (no restriction). */
