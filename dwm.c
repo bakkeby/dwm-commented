@@ -5082,7 +5082,8 @@ setlayout(const Arg *arg)
 
 	/* Copy the layout symbol of the given layout into the monitor's layout symbol. This is
 	 * later used when drawing the layout symbol on the bar. */
-	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol, sizeof selmon->ltsymbol);
+	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol, sizeof(selmon->ltsymbol) - 1);
+	selmon->ltsymbol[sizeof(selmon->ltsymbol) - 1] = '\0';
 
 	/* If there are visible clients on the current monitor then we apply a full arrange to make
 	 * clients resize and reposition according to the new layout. */
