@@ -5683,7 +5683,7 @@ spawn(const Arg *arg)
 	 * lines below and remove the -m argument from the command.
 	 */
 	if (arg->v == dmenucmd)
-		dmenumon[0] = '0' + selmon->num;
+		snprintf(dmenumon, sizeof(dmenumon), "%d", selmon->num);
 
 	/* This next call does some magic that may be hard to grasp. Let's demystify.
 	 *
