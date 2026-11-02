@@ -1431,6 +1431,7 @@ arrange(Monitor *m)
  * @called_from arrange to handle layout arrangements
  * @calls monocle to resize and reposition client windows
  * @calls tile to resize and reposition client windows
+ * @calls snprintf to copy the current layout symbol into the monitor layout symbol
  *
  * Internal call stack:
  *    ~ -> arrange -> arrangemon
@@ -1440,8 +1441,7 @@ arrangemon(Monitor *m)
 {
 	/* This copies the layout symbol of the selected layout to the monitor's layout string,
 	 * which is later used in drawbar when printing the layout symbol on the bar. */
-	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof(m->ltsymbol) - 1);
-	m->ltsymbol[sizeof(m->ltsymbol) - 1] = '\0';
+	snprintf(m->ltsymbol, sizeof(m->ltsymbol), "%s", m->lt[m->sellt]->symbol);
 
 	/* If floating layout is used then the arrange function will be NULL, otherwise we call
 	 * that arrange function. This will be the tile function or the monocle function depending
@@ -2216,7 +2216,7 @@ configurerequest(XEvent *e)
  *
  * @called_from updategeom to create new monitors
  * @calls ecalloc to allocate memory for the new structure (see util.c)
- * @calls strncpy to copy the default layout symbol into the monitor layout symbol
+ * @calls snprintf to copy the default layout symbol into the monitor layout symbol
  *
  * Internal call stack:
  *    run -> configurenotify -> updategeom -> createmon
@@ -2252,8 +2252,7 @@ createmon(void)
 
 	/* This copies the layout symbol from the first layout into the monitor's layout symbol.
 	 * This is later used when drawing the layout symbol on the bar. */
-	strncpy(m->ltsymbol, layouts[0].symbol, sizeof(m->ltsymbol) - 1);
-	m->ltsymbol[sizeof(m->ltsymbol) - 1] = '\0';
+	snprintf(m->ltsymbol, sizeof(m->ltsymbol), "%s", layouts[0].symbol);
 
 	/* Return the newly created monitor. */
 	return m;
@@ -3200,7 +3199,7 @@ getstate(Window w)
  * @calls XmbTextPropertyToTextList https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XmbTextPropertyToTextList.html
  * @calls XFreeStringList https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XFreeStringList.html
  * @calls XFree https://tronche.com/gui/x/xlib/display/XFree.html
- * @calls strncpy to copy the text property string to a given variable
+ * @calls snprintf to copy the text property string to a given variable
  * @see https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/converting-string-lists.html
  *
  * Internal call stack:
@@ -3231,18 +3230,15 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	/* The property data can either be a text string or it can be a list of text strings. */
 	if (name.encoding == XA_STRING) {
 		/* If it is a text string then just copy the data to the designated text variable. */
-		strncpy(text, (char *)name.value, size - 1);
+		snprintf(text, size, "%s", (char *)name.value);
 	/* If it is a list of text strings then we need to retrieve it by calling
 	 * XmbTextPropertyToTextList and the returned list needs to be freed when we are
 	 * finished with it. */
 	} else if (XmbTextPropertyToTextList(dpy, &name, &list, &n) >= Success) {
 		if (n > 0 && *list)
-			strncpy(text, *list, size - 1);
+			snprintf(text, size, "%s", *list);
 		XFreeStringList(list);
 	}
-	/* This is to make sure that the end of the text marks the end of the string, in the event
-	 * that the property held more data than we could store. */
-	text[size - 1] = '\0';
 	/* Free the XTextProperty value returned by XGetTextProperty. */
 	XFree(name.value);
 	return 1;
@@ -5038,7 +5034,7 @@ setfullscreen(Client *c, int fullscreen)
  *
  * @called_from keypress in relation to keybindings
  * @called_from buttonpress in relation to button bindings
- * @calls strncpy to update the monitor's layout symbol
+ * @calls snprintf to update the monitor's layout symbol
  * @calls arrange to reposition and resize clients after the mfact has been changed
  * @calls drawbar to reposition and resize clients after the mfact has been changed
  *
@@ -5082,8 +5078,7 @@ setlayout(const Arg *arg)
 
 	/* Copy the layout symbol of the given layout into the monitor's layout symbol. This is
 	 * later used when drawing the layout symbol on the bar. */
-	strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol, sizeof(selmon->ltsymbol) - 1);
-	selmon->ltsymbol[sizeof(selmon->ltsymbol) - 1] = '\0';
+	snprintf(selmon->ltsymbol, sizeof(selmon->ltsymbol), "%s", selmon->lt[selmon->sellt]->symbol);
 
 	/* If there are visible clients on the current monitor then we apply a full arrange to make
 	 * clients resize and reposition according to the new layout. */
